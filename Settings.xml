@@ -3,8 +3,9 @@
   <Enabled>true</Enabled>
   <X>0.50</X>
   <Y>0.88</Y>
-  <Scale>1.0</Scale>
+  <Scale>1.25</Scale>
   <Opacity>0.86</Opacity>
+  <Diagnostics>false</Diagnostics>
   <Animate>true</Animate>
   <HideInMenus>true</HideInMenus>
   <HideInScenes>true</HideInScenes>
@@ -12,6 +13,7 @@
   <Cyan>#33ECFF</Cyan>
   <Magenta>#F354F8</Magenta>
   <Health><Enabled>true</Enabled><Color>#50FF92</Color><CriticalPercent>25</CriticalPercent></Health>
+  <Armor><Enabled>true</Enabled><Color>#82D1FF</Color><CriticalPercent>25</CriticalPercent></Armor>
   <Hunger><Enabled>true</Enabled><Color>#FFA94F</Color><CriticalPercent>25</CriticalPercent></Hunger>
   <Thirst><Enabled>true</Enabled><Color>#36E6FF</Color><CriticalPercent>25</CriticalPercent></Thirst>
   <Sleep><Enabled>true</Enabled><Color>#AC7DFF</Color><CriticalPercent>25</CriticalPercent></Sleep>

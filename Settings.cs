@@ -7,7 +7,7 @@ using System.Xml.Serialization;
 
 namespace ElectroHud
 {
-    public enum Indicator { Health, Hunger, Thirst, Sleep, Stress, Fuel }
+    public enum Indicator { Health, Hunger, Thirst, Sleep, Stress, Fuel, Armor }
 
     public sealed class IndicatorSettings
     {
@@ -35,8 +35,9 @@ namespace ElectroHud
         public bool Enabled { get; set; } = true;
         public float X { get; set; } = .5f;
         public float Y { get; set; } = .88f;
-        public float Scale { get; set; } = 1f;
+        public float Scale { get; set; } = 1.25f;
         public float Opacity { get; set; } = .86f;
+        public bool Diagnostics { get; set; }
         public bool Animate { get; set; } = true;
         public bool HideInMenus { get; set; } = true;
         public bool HideInScenes { get; set; } = true;
@@ -44,13 +45,14 @@ namespace ElectroHud
         public string Cyan { get; set; } = "#33ECFF";
         public string Magenta { get; set; } = "#F354F8";
         public IndicatorSettings Health { get; set; } = new IndicatorSettings { Color = "#50FF92" };
+        public IndicatorSettings Armor { get; set; } = new IndicatorSettings { Color = "#82D1FF" };
         public IndicatorSettings Hunger { get; set; } = new IndicatorSettings { Color = "#FFA94F" };
         public IndicatorSettings Thirst { get; set; } = new IndicatorSettings { Color = "#36E6FF" };
         public IndicatorSettings Sleep { get; set; } = new IndicatorSettings { Color = "#AC7DFF" };
         public IndicatorSettings Stress { get; set; } = new IndicatorSettings { Color = "#FF68BA" };
         public IndicatorSettings Fuel { get; set; } = new IndicatorSettings { Color = "#5488FF", CriticalPercent = 15 };
 
-        internal IndicatorSettings[] Indicators => new[] { Health, Hunger, Thirst, Sleep, Stress, Fuel };
+        internal IndicatorSettings[] Indicators => new[] { Health, Hunger, Thirst, Sleep, Stress, Fuel, Armor };
         internal Keys Key => Enum.TryParse(ToggleKey, true, out Keys key) && Enum.IsDefined(typeof(Keys), key) ? key : Keys.F9;
 
         internal static Settings Load(string path, Action<string> log)
@@ -88,13 +90,14 @@ namespace ElectroHud
         public bool Menu;
         public float SafeZone;
         public Size Screen;
-        public float Health, Hunger, Thirst, Sleep, Fuel;
+        public float Health, Hunger, Thirst, Sleep, Fuel, Armor;
 
         public float Value(Indicator kind)
         {
             switch (kind)
             {
                 case Indicator.Health: return Health;
+                case Indicator.Armor: return Armor;
                 case Indicator.Hunger: return Hunger;
                 case Indicator.Thirst: return Thirst;
                 case Indicator.Sleep: return Sleep;

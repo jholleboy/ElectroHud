@@ -1,8 +1,8 @@
 # ElectroHud
 
-HUD independente para **GTA V Legacy**, RAGE Plugin Hook e .NET Framework 4.8. O painel inferior central mostra saúde e, quando os dados do Los Santos RED estão disponíveis, fome, sede, sono e combustível. As barras circulares respondem aos valores reais. O painel recolhe os espaços dos indicadores indisponíveis.
+HUD independente para **GTA V Legacy**, RAGE Plugin Hook e .NET Framework 4.8. O painel inferior central mostra saúde e colete e, quando os dados do Los Santos RED estão disponíveis, fome, sede, sono e combustível. As barras circulares respondem aos valores reais. O painel recolhe os espaços dos indicadores indisponíveis.
 
-A interface usa moldura ciano e magenta, fundo escuro translúcido, ícones originais com fundo transparente e percentuais coloridos. A imagem de referência não apareceu nos anexos disponíveis. O visual segue a descrição do projeto.
+A interface usa moldura ciano e magenta, fundo escuro translúcido, ícones originais com fundo transparente e percentuais coloridos. O painel permanece em uma linha, inclusive quando só Saúde e Colete estão disponíveis, e não tem cabeçalho.
 
 ## Compilar e instalar
 
@@ -13,12 +13,12 @@ No Windows, instale o Developer Pack do .NET Framework 4.8, o Visual Studio Buil
 .\PACKAGE.ps1
 ```
 
-O build produz `bin\Release\ElectroHud.dll`. Após o build, extraia `artifacts\ElectroHud-Legacy.zip` na raiz do GTA V. O pacote instala `Plugins\ElectroHud.dll` e `Plugins\ElectroHud\` com os recursos e a configuração. Carregue `ElectroHud.dll` pelo RAGE Plugin Hook no modo história. O Los Santos RED é opcional e pode ser iniciado antes ou depois.
+O build produz `bin\Release\ElectroHud.dll`. Após o build, extraia `artifacts\ElectroHud-Legacy.zip` na raiz do GTA V. O pacote instala `Plugins\ElectroHud.dll` e `Plugins\ElectroHud\` com os recursos e a configuração. Carregue `ElectroHud.dll` pelo RAGE Plugin Hook no modo história. O Los Santos RED é opcional e pode ser iniciado antes ou depois. Se o RPH isolar os plugins, use a ponte opcional descrita em [INTEGRATION.md](INTEGRATION.md). O patch da ponte acompanha os fontes do ElectroHud.
 
-Use **F9** para alternar a visibilidade. Valores e diagnóstico do plugin ficam disponíveis durante a execução. Se houver falha ao carregar recursos ou ao ler o Los Santos RED, procure `[ElectroHud]` no console e no `RagePluginHook.log`.
+Use **F9** para alternar a visibilidade. Ative `<Diagnostics>true</Diagnostics>` no XML e recarregue o ElectroHud para registrar a origem ou o motivo da ausência de cada indicador. Se houver falha ao carregar recursos ou ao ler o Los Santos RED, procure `[ElectroHud]` no console e no `RagePluginHook.log`.
 
 ## Configuração
 
 Edite `Plugins\ElectroHud\Settings.xml` e recarregue o plugin. `X` e `Y` são as coordenadas normalizadas do centro do painel. `Scale` ajusta o tamanho com a resolução, e `Opacity` vai de 0 a 1. `Cyan`, `Magenta` e as cores individuais aceitam `#RRGGBB`. Cada indicador aceita `Enabled` e `CriticalPercent`. `Animate` controla interpolação e pulsação, `HideInMenus` e `HideInScenes` controlam a ocultação, e `ToggleKey` aceita nomes de teclas de `System.Windows.Forms.Keys`, como `F9` ou `F11`.
 
-O indicador de estresse fica oculto por falta de uma fonte verificada. Sem o Los Santos RED, o plugin apresenta a saúde do GTA V. Consulte [a integração](INTEGRATION.md) e [o roteiro de teste](TESTING.md).
+O indicador de estresse fica oculto por falta de uma fonte verificada. Sem o Los Santos RED, o plugin apresenta a saúde e o colete do GTA V. Consulte [a integração](INTEGRATION.md) e [o roteiro de teste](TESTING.md).

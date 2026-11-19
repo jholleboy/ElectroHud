@@ -12,18 +12,18 @@ namespace ElectroHud
     internal sealed class HudRenderer : IDisposable
     {
         private const int Segments = 40;
-        private const float CardWidth = 102;
-        private const float PanelHeight = 142;
-        private static readonly string[] Names = { "Saúde", "Fome", "Sede", "Sono", "Estresse", "Combustível" };
-        private static readonly string[] Icons = { "health", "hunger", "thirst", "sleep", "stress", "fuel" };
-        private static readonly string[] Defaults = { "#50FF92", "#FFA94F", "#36E6FF", "#AC7DFF", "#FF68BA", "#5488FF" };
+        private const float CardWidth = 108;
+        private const float PanelHeight = 111;
+        private static readonly string[] Names = { "Saúde", "Fome", "Sede", "Sono", "Estresse", "Combustível", "Colete" };
+        private static readonly string[] Icons = { "health", "hunger", "thirst", "sleep", "stress", "fuel", "armor" };
+        private static readonly string[] Defaults = { "#50FF92", "#FFA94F", "#36E6FF", "#AC7DFF", "#FF68BA", "#5488FF", "#82D1FF" };
         private readonly PointF[] ring = new PointF[Segments];
         private readonly Gauge[] gauges = new Gauge[Names.Length];
         private readonly List<Texture> textures = new List<Texture>();
         private readonly Settings settings;
         private readonly Color cyan, magenta, background, edge;
         private readonly string cache;
-        private readonly Texture logo;
+        private static readonly int[] Order = { 0, 6, 1, 2, 3, 4, 5 };
         private long previousFrame;
 
         private sealed class Gauge
@@ -50,7 +50,6 @@ namespace ElectroHud
             Directory.CreateDirectory(cache);
             try
             {
-                logo = Text("logo", "ElectroHud", cyan, 29, 244, 54, true);
                 var options = settings.Indicators;
                 for (int i = 0; i < options.Length; ++i)
                 {
@@ -94,8 +93,9 @@ namespace ElectroHud
         public void Draw(GraphicsEventArgs frame, Sample sample)
         {
             int count = 0;
-            foreach (var gauge in gauges)
+            foreach (int slot in Order)
             {
+                var gauge = gauges[slot];
                 if (gauge == null)
                     continue;
                 if (float.IsNaN(sample.Value(gauge.Kind)))
@@ -113,7 +113,7 @@ namespace ElectroHud
             float elapsed = previousFrame == 0 ? .05f : Math.Min(.12f, (now - previousFrame) / (float)Stopwatch.Frequency);
             previousFrame = now;
             float progress = settings.Animate ? 1 - (float)Math.Exp(-12 * elapsed) : 1f;
-            float width = Math.Max(152, count * CardWidth + 22);
+            float width = Math.Max(228, count * CardWidth + 22);
             float scale = Math.Min(sample.Screen.Width / 1920f, sample.Screen.Height / 1080f) * settings.Scale;
             float insetX = sample.Screen.Width * (1 - sample.SafeZone) * .5f;
             float insetY = sample.Screen.Height * (1 - sample.SafeZone) * .5f;
@@ -129,8 +129,9 @@ namespace ElectroHud
 
             DrawPanel(frame, left, top, width, scale);
             int index = 0;
-            foreach (var gauge in gauges)
+            foreach (int slot in Order)
             {
+                var gauge = gauges[slot];
                 if (gauge == null)
                     continue;
                 float value = sample.Value(gauge.Kind);
@@ -147,7 +148,7 @@ namespace ElectroHud
             Rect(f, x, y, scale, 5, 0, width - 10, PanelHeight, background);
             Rect(f, x, y, scale, 0, 5, 5, PanelHeight - 10, background);
             Rect(f, x, y, scale, width - 5, 5, 5, PanelHeight - 10, background);
-            Rect(f, x, y, scale, 6, 23, width - 12, 1, edge);
+            Rect(f, x, y, scale, 11, 5, width - 22, 1, edge);
             Rect(f, x, y, scale, 5, 0, 54, 2, cyan);
             Rect(f, x, y, scale, 0, 5, 2, 19, cyan);
             Rect(f, x, y, scale, width - 38, 0, 33, 2, magenta);
@@ -156,7 +157,6 @@ namespace ElectroHud
             Rect(f, x, y, scale, width - 58, PanelHeight - 2, 53, 2, cyan);
             for (int i = 0; i < 3; ++i)
                 Rect(f, x, y, scale, width - 20 - i * 6, 13, 3, 3, i == 2 ? magenta : cyan);
-            Sprite(f, logo, x, y, scale, 10, 1, 106, 23);
         }
 
         private void DrawGauge(GraphicsEventArgs f, Gauge gauge, float actual, float x, float y, float scale, long now)
@@ -165,17 +165,17 @@ namespace ElectroHud
             for (int i = 0; i < Segments; ++i)
             {
                 var point = ring[i];
-                Rect(f, x, y, scale, point.X - 1.2f, 61 + point.Y - 1.2f, 2.4f, 2.4f,
+                Rect(f, x, y, scale, point.X - 1.2f, 40 + point.Y - 1.2f, 2.4f, 2.4f,
                     i < active ? gauge.Color : gauge.Track);
             }
             if (actual <= gauge.Critical)
             {
                 float pulse = settings.Animate ? .65f + .35f * (float)Math.Sin(now / (double)Stopwatch.Frequency * 6) : 1;
-                Rect(f, x, y, scale, -23, 92, 46, 4, Alpha(gauge.Glow, pulse));
-                Rect(f, x, y, scale, -19, 93, 38, 1, Alpha(gauge.Color, pulse));
+                Rect(f, x, y, scale, -23, 71, 46, 4, Alpha(gauge.Glow, pulse));
+                Rect(f, x, y, scale, -19, 72, 38, 1, Alpha(gauge.Color, pulse));
             }
-            Sprite(f, gauge.Icon, x, y, scale, -16, 45, 32, 32);
-            Sprite(f, gauge.Label, x, y, scale, -46, 117, 92, 21);
+            Sprite(f, gauge.Icon, x, y, scale, -16, 24, 32, 32);
+            Sprite(f, gauge.Label, x, y, scale, -46, 92, 92, 21);
 
             int percent = (int)Math.Round(gauge.Display);
             int digits = percent >= 100 ? 3 : (percent >= 10 ? 2 : 1);
@@ -188,7 +188,7 @@ namespace ElectroHud
 
         private static void DrawDigit(GraphicsEventArgs f, Gauge gauge, float x, float y, float scale, ref float position, int digit)
         {
-            Sprite(f, gauge.Glyphs[digit], x, y, scale, position, 96, 9, 19);
+            Sprite(f, gauge.Glyphs[digit], x, y, scale, position, 74, 9, 19);
             position += 8;
         }
 
