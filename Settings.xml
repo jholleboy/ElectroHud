@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ElectroHud>
+  <Enabled>true</Enabled>
+  <X>0.50</X>
+  <Y>0.88</Y>
+  <Scale>1.0</Scale>
+  <Opacity>0.86</Opacity>
+  <Animate>true</Animate>
+  <HideInMenus>true</HideInMenus>
+  <HideInScenes>true</HideInScenes>
+  <ToggleKey>F9</ToggleKey>
+  <Cyan>#33ECFF</Cyan>
+  <Magenta>#F354F8</Magenta>
+  <Health><Enabled>true</Enabled><Color>#50FF92</Color><CriticalPercent>25</CriticalPercent></Health>
+  <Hunger><Enabled>true</Enabled><Color>#FFA94F</Color><CriticalPercent>25</CriticalPercent></Hunger>
+  <Thirst><Enabled>true</Enabled><Color>#36E6FF</Color><CriticalPercent>25</CriticalPercent></Thirst>
+  <Sleep><Enabled>true</Enabled><Color>#AC7DFF</Color><CriticalPercent>25</CriticalPercent></Sleep>
+  <!-- Oculto enquanto não houver uma fonte real de estresse. -->
+  <Stress><Enabled>true</Enabled><Color>#FF68BA</Color><CriticalPercent>25</CriticalPercent></Stress>
+  <Fuel><Enabled>true</Enabled><Color>#5488FF</Color><CriticalPercent>15</CriticalPercent></Fuel>
+</ElectroHud>
