@@ -1,0 +1,650 @@
+diff --git a/Los Santos RED/Localization/LanguageStrings_pt-BR.xml b/Los Santos RED/Localization/LanguageStrings_pt-BR.xml
+index 073b4548d6dc9b9e9207d7fcc6e377a947749728..092277fd59ef107c511c34da2235bcdc3bd44c80 100644
+--- a/Los Santos RED/Localization/LanguageStrings_pt-BR.xml	
++++ b/Los Santos RED/Localization/LanguageStrings_pt-BR.xml	
+@@ -1296,6 +1296,22 @@
+     <ID>hud.alerted</ID>
+     <Text>~o~ Em alerta</Text>
+   </LanguageString>
++  <LanguageString>
++    <ID>hud.vehicleReportedStolen</ID>
++    <Text>~r~Veículo denunciado como roubado</Text>
++  </LanguageString>
++  <LanguageString>
++    <ID>hud.fictitiousPlate</ID>
++    <Text>~r~Placa falsa</Text>
++  </LanguageString>
++  <LanguageString>
++    <ID>hud.plateKnownToPolice</ID>
++    <Text>~o~Placa procurada pela polícia</Text>
++  </LanguageString>
++  <LanguageString>
++    <ID>hud.vehicleKnownToPolice</ID>
++    <Text>~o~Veículo reconhecido pela polícia</Text>
++  </LanguageString>
+   <LanguageString>
+     <ID>hud.locate</ID>
+     <Text>~o~ Tentando localizar</Text>
+diff --git a/Los Santos RED/ModController.cs b/Los Santos RED/ModController.cs
+index 020d96832cdda2e97ca2a4e971d292bb22ef0454..d3eaf420c0c84e1854a06e6b2ea7ba717d644367 100644
+--- a/Los Santos RED/ModController.cs	
++++ b/Los Santos RED/ModController.cs	
+@@ -34,6 +34,15 @@ namespace LosSantosRED.lsr
+         private Mod.Crafting Crafting;
+         public ModDataFileManager ModDataFileManager { get; private set; }
+         public Mod.Player Player { get; private set; }
++        private readonly ElectroHudSnapshotPublisher electroHud = new ElectroHudSnapshotPublisher();
++        internal int ElectroHudNeedsMask => electroHud.VisibleMask & 56;
++        internal bool ElectroHudShowsFuel(uint handle) => electroHud.IsVisible(4, handle);
++        internal bool ElectroHudShowsText(int bit, string text) => electroHud.ShowsText(bit, text);
++        internal bool ElectroHudShowsVehicle(int bit, uint handle, string text = null) =>
++            electroHud.IsVisible(bit, handle) && (text == null || electroHud.ShowsText(bit, text));
++        internal bool ElectroHudShowsLimit(uint handle, Street street) =>
++            electroHud.IsVisible(2048, handle) && ReferenceEquals(street, electroHud.VisibleStreet);
++        internal LowerRightDisplay ElectroHudDisplay => UI?.ElectroHudDisplay;
+         private WeatherManager WeatherManager;
+ 
+         public ModController()
+@@ -182,6 +191,7 @@ namespace LosSantosRED.lsr
+         public void Dispose()
+         {
+             IsRunning = false;
++            electroHud.Dispose();
+             Player.Dispose();
+             World.Dispose();
+             PedSwap.Dispose();
+@@ -210,6 +220,7 @@ namespace LosSantosRED.lsr
+                 new ModTaskGroup("RG1:Player", new List<ModTask>()
+                 {
+                      new ModTask(100, "Player.Update", Player.Update, 0),//1
++                     new ModTask(250, "ElectroHud.Snapshot", () => electroHud.Publish(this), 0),
+                      new ModTask(250, "UI.UpdateData", UI.CacheData, 1),//500
+                 }),
+                 new ModTaskGroup("RG2:Player Gen", new List<ModTask>()
+@@ -547,4 +558,211 @@ namespace LosSantosRED.lsr
+             World.SpawnErrors.Add(spawnError);
+         }
+     }
++
++    // Optional snapshot producer with expiring display acknowledgements.
++    internal sealed class ElectroHudSnapshotPublisher : IDisposable
++    {
++        private const int Size = 8192;
++        private const int Magic = 0x45485234;
++        private System.IO.MemoryMappedFiles.MemoryMappedFile map;
++        private System.IO.MemoryMappedFiles.MemoryMappedViewAccessor view;
++        private System.Threading.Mutex mutex;
++        private bool disabled;
++        private long visibleStamp;
++        private int visibleMask;
++        private uint visibleVehicle;
++        private long publishedStamp;
++        private string publishedZone, publishedStreet, publishedPursuit, publishedRecognition;
++        private string visibleZone, visibleStreet, visiblePursuit, visibleRecognition;
++        private Street publishedLimitStreet;
++        public Street VisibleStreet { get; private set; }
++
++
++        public int VisibleMask
++        {
++            get
++            {
++                long age = Stopwatch.GetTimestamp() - visibleStamp;
++                return visibleStamp > 0 && age >= 0 && age <= Stopwatch.Frequency * 3 / 4 ? visibleMask : 0;
++            }
++        }
++
++        public bool IsVisible(int bit, uint vehicleHandle) =>
++            vehicleHandle != 0 && visibleVehicle == vehicleHandle && (VisibleMask & bit) != 0;
++
++        public bool ShowsText(int bit, string text)
++        {
++            if ((VisibleMask & bit) == 0 || string.IsNullOrWhiteSpace(text))
++                return false;
++            string acknowledged = bit == 64 ? visibleZone : bit == 128 ? visibleStreet
++                : bit == 512 ? visiblePursuit : visibleRecognition;
++            return text == acknowledged;
++        }
++
++        public void Publish(ModController controller)
++        {
++            if (!controller.IsRunning || disabled)
++                return;
++            try
++            {
++                var player = controller.Player;
++                var manager = controller.ModDataFileManager?.Settings?.SettingsManager;
++                var ped = player?.Character;
++                if (player == null || manager == null || ped == null || !ped.Exists() || player.HumanState == null)
++                    return;
++
++                var needs = manager.NeedsSettings;
++                var vehicleOptions = manager.VehicleSettings;
++                int flags = controller.IsDisplayingAlertScreen || player.IsShowingFrontEndMenus
++                    || player.IsDisplayingCustomMenus ? 1 : 0;
++                if (vehicleOptions.UseCustomFuelSystem) flags |= 2;
++                if (needs.ApplyNeeds && needs.ApplyHunger) flags |= 8;
++                if (needs.ApplyNeeds && needs.ApplyThirst) flags |= 16;
++                if (needs.ApplyNeeds && needs.ApplySleep) flags |= 32;
++                float hunger = player.HumanState.Hunger?.CurrentValue ?? float.NaN;
++                float thirst = player.HumanState.Thirst?.CurrentValue ?? float.NaN;
++                float sleep = player.HumanState.Sleep?.CurrentValue ?? float.NaN;
++                uint handle = 0;
++                float fuel = float.NaN;
++                var tracked = player.CurrentVehicle;
++                var current = ped.IsInAnyVehicle(false) ? ped.CurrentVehicle : null;
++                if (current != null && current.Exists() && tracked?.Vehicle != null
++                    && tracked.Vehicle.Exists() && current.Handle == tracked.Vehicle.Handle)
++                {
++                    handle = (uint)current.Handle;
++                    if (tracked.RequiresFuel)
++                    {
++                        flags |= 4;
++                        if (vehicleOptions.UseCustomFuelSystem && vehicleOptions.CustomFuelSystemFuelMax > 0)
++                            fuel = current.FuelLevel * 100f / vehicleOptions.CustomFuelSystemFuelMax;
++                    }
++                }
++
++                var location = player.CurrentLocation;
++                var zone = location?.CurrentZone;
++                var street = location?.CurrentStreet;
++                float limit = float.NaN;
++                if (handle != 0 && (player.IsInAutomobile || player.IsOnMotorcycle))
++                {
++                    flags |= 256;
++                    if (!string.IsNullOrWhiteSpace(street?.Name)
++                        && ReferenceEquals(street, controller.ModDataFileManager.Streets.GetStreet(street.Name)))
++                    {
++                        float registered = street.ElectroHudSpeedLimitKMH;
++                        if (registered > 0 && !float.IsInfinity(registered))
++                        {
++                            flags |= 128;
++                            limit = registered;
++                        }
++                    }
++                    else if (street != null)
++                        flags |= 512; // LocationData's synthetic record is not a posted limit.
++                }
++                if (player.IsInSearchMode) flags |= 64;
++                if (handle != 0 && player.Violations.TrafficViolations.IsFelonySpeeding) flags |= 1024;
++                var display = controller.ElectroHudDisplay;
++                string zoneText = display?.GetZoneDisplay();
++                string streetText = display?.GetStreetDisplay(true);
++                string pursuit = display?.GetElectroHudPursuit();
++                string recognition = handle == 0 ? null : display?.GetElectroHudVehicleContext();
++
++                if (view == null)
++                {
++                    string channel;
++                    using (var process = Process.GetCurrentProcess())
++                        channel = @"Local\ElectroHud.Lsr.v4." + process.Id;
++                    mutex = new System.Threading.Mutex(false, channel + ".Lock");
++                    map = System.IO.MemoryMappedFiles.MemoryMappedFile.CreateOrOpen(channel, Size);
++                    view = map.CreateViewAccessor(0, Size);
++                }
++                bool held = false;
++                try
++                {
++                    try { held = mutex.WaitOne(0); }
++                    catch (System.Threading.AbandonedMutexException)
++                    {
++                        held = true;
++                        view.Write(48, 0L);
++                    }
++                    if (!held)
++                        return;
++                    long confirmedAt = view.ReadInt64(48);
++                    if (confirmedAt == 0)
++                    {
++                        visibleStamp = 0;
++                    }
++                    else if (publishedStamp != 0 && view.ReadInt64(56) == publishedStamp)
++                    {
++                        visibleMask = view.ReadInt32(8184);
++                        visibleVehicle = view.ReadUInt32(8188);
++                        visibleStamp = confirmedAt;
++                        visibleZone = publishedZone;
++                        visibleStreet = publishedStreet;
++                        visiblePursuit = publishedPursuit;
++                        visibleRecognition = publishedRecognition;
++                        VisibleStreet = publishedLimitStreet;
++                    }
++                    view.Write(8, 0L);
++                    view.Write(0, Magic);
++                    view.Write(4, handle);
++                    view.Write(16, hunger);
++                    view.Write(20, thirst);
++                    view.Write(24, sleep);
++                    view.Write(28, fuel);
++                    view.Write(32, flags);
++                    view.Write(36, player.WantedLevel);
++                    view.Write(40, limit);
++                    int offset = 64;
++                    publishedZone = WriteText(ref offset, 64, zoneText);
++                    publishedStreet = WriteText(ref offset, 128, streetText);
++                    publishedPursuit = WriteText(ref offset, 512, pursuit);
++                    publishedRecognition = WriteText(ref offset, 1024, recognition);
++                    WriteText(ref offset, 1, zone?.AssignedLEAgency?.ShortName);
++                    WriteText(ref offset, 2, zone?.AssignedGang?.ShortName);
++                    WriteText(ref offset, 3, zone?.DisplayName);
++                    view.Write(44, offset - 64);
++                    publishedLimitStreet = float.IsNaN(limit) ? null : street;
++                    publishedStamp = Stopwatch.GetTimestamp();
++                    view.Write(8, publishedStamp);
++                }
++                finally
++                {
++                    if (held)
++                        mutex.ReleaseMutex();
++                }
++            }
++            catch (System.Threading.ThreadAbortException) { throw; }
++            catch (Exception ex)
++            {
++                disabled = true;
++                Dispose();
++                Game.LogTrivial("[ElectroHud bridge] Publicação desativada: " + ex.GetBaseException().Message);
++            }
++        }
++
++        private string WriteText(ref int offset, int id, string text)
++        {
++            if (string.IsNullOrWhiteSpace(text))
++                return null;
++            byte[] bytes = System.Text.Encoding.UTF8.GetBytes(text);
++            if (bytes.Length > 8184 - offset - 8)
++                return null;
++            view.Write(offset, id);
++            view.Write(offset + 4, bytes.Length);
++            view.WriteArray(offset + 8, bytes, 0, bytes.Length);
++            offset += 8 + bytes.Length;
++            return text;
++        }
++
++        public void Dispose()
++        {
++            visibleStamp = 0;
++            view?.Dispose();
++            map?.Dispose();
++            mutex?.Dispose();
++            view = null;
++            map = null;
++            mutex = null;
++        }
++    }
+ }
+diff --git a/Los Santos RED/lsr/Locations/Other/Street.cs b/Los Santos RED/lsr/Locations/Other/Street.cs
+index f934e202f8db812bc51995c2c55afc5f78089dae..bb8857a18c1f7f5695e14399603d0dfe29584328 100644
+--- a/Los Santos RED/lsr/Locations/Other/Street.cs	
++++ b/Los Santos RED/lsr/Locations/Other/Street.cs	
+@@ -15,6 +15,9 @@ public class Street
+ 
+     public string ProperStreetName => string.IsNullOrEmpty(DisplayName) ? Name : DisplayName;
+ 
++    internal float ElectroHudSpeedLimitKMH => SpeedLimitUnits == "MPH" ? SpeedLimit * 1.609344f
++        : SpeedLimitUnits == "KM/H" ? SpeedLimit : float.NaN;
++
+     public float SpeedLimitKMH => SpeedLimitUnits == "KM/H" ? SpeedLimit : SpeedLimit * 1.60933f;
+     public float SpeedLimitMPH => SpeedLimitUnits == "MPH" ? SpeedLimit : SpeedLimit * 0.621371f;
+     public float SpeedLimitMS => SpeedLimitUnits == "MPH" ? SpeedLimit * 0.44704f : SpeedLimit * 0.277778f;
+diff --git a/Los Santos RED/lsr/Player/HumanState/HumanState.cs b/Los Santos RED/lsr/Player/HumanState/HumanState.cs
+index ac671d1c4baeeda4ee1d8ec01424efcc9a6c7e36..e9f21acc487211b99bafc37310e5a4573d01f7be 100644
+--- a/Los Santos RED/lsr/Player/HumanState/HumanState.cs	
++++ b/Los Santos RED/lsr/Player/HumanState/HumanState.cs	
+@@ -105,13 +105,20 @@ public class HumanState
+     {
+         Reset();
+     }
+-    public string DisplayString()
++    public string DisplayString() => DisplayString(0);
++    public string DisplayString(int hidden)
+     {
+-        return string.Join(" ", HumanNeeds.OrderBy(x=>x.Name).Select(x => x.Display));
++        return string.Join(" ", HumanNeeds.Where(x => !IsReplacedNeed(x, hidden)).OrderBy(x=>x.Name).Select(x => x.Display));
+     }
+-    public string RecentlyChangedString()
++    private bool IsReplacedNeed(HumanNeed need, int hidden) =>
++        ((hidden & 8) != 0 && ReferenceEquals(need, Hunger))
++        || ((hidden & 16) != 0 && ReferenceEquals(need, Thirst))
++        || ((hidden & 32) != 0 && ReferenceEquals(need, Sleep));
++
++    public string RecentlyChangedString() => RecentlyChangedString(0);
++    public string RecentlyChangedString(int hidden)
+     {
+-        return string.Join(" ", HumanNeeds.Where(x=> x.RecentlyChanged).OrderBy(x => x.Name).Select(x => x.Display));
++        return string.Join(" ", HumanNeeds.Where(x => x.RecentlyChanged && !IsReplacedNeed(x, hidden)).OrderBy(x => x.Name).Select(x => x.Display));
+     }
+ }
+ 
+diff --git a/Los Santos RED/lsr/UI/LowerRightDisplay.cs b/Los Santos RED/lsr/UI/LowerRightDisplay.cs
+index 039999eb12963875ed07180be3c29becb5cfc1a9..c8dd7a525a42a1831210b9558e852a4163ff5af4 100644
+--- a/Los Santos RED/lsr/UI/LowerRightDisplay.cs	
++++ b/Los Santos RED/lsr/UI/LowerRightDisplay.cs	
+@@ -178,6 +178,8 @@ public class LowerRightDisplay
+         if (Settings.SettingsManager.LSRHUDSettings.ShowStreetDisplay)
+         {
+             StreetFader.Update(lastFaderStreetDisplay, lastStreetDisplay);
++            if (EntryPoint.ModController?.ElectroHudShowsText(128, lastStreetDisplay) == true)
++                return;
+             if (Settings.SettingsManager.LSRHUDSettings.FadeStreetDisplay && ((!DisplayablePlayer.IsWanted && !DisplayablePlayer.Investigation.IsActive) || Settings.SettingsManager.LSRHUDSettings.FadeStreetDisplayDuringWantedAndInvestigation) && !UI.IsDrawingWheelMenu)
+             {
+                 NativeHelper.DisplayTextOnScreen(StreetFader.TextToShow, Settings.SettingsManager.LSRHUDSettings.StreetPositionX - lowerRightHeighSpace, Settings.SettingsManager.LSRHUDSettings.StreetPositionY, Settings.SettingsManager.LSRHUDSettings.StreetScale, Color.White, Settings.SettingsManager.LSRHUDSettings.StreetFont, (GTATextJustification)Settings.SettingsManager.LSRHUDSettings.StreetJustificationID, false, StreetFader.AlphaValue);
+@@ -193,6 +195,8 @@ public class LowerRightDisplay
+         if (Settings.SettingsManager.LSRHUDSettings.ShowZoneDisplay)
+         {
+             ZoneFader.Update(lastZoneDisplay, lastZoneDisplay);
++            if (EntryPoint.ModController?.ElectroHudShowsText(64, lastZoneDisplay) == true)
++                return;
+             if (Settings.SettingsManager.LSRHUDSettings.FadeZoneDisplay && ((!DisplayablePlayer.IsWanted && !DisplayablePlayer.Investigation.IsActive) || Settings.SettingsManager.LSRHUDSettings.FadeZoneDisplayDuringWantedAndInvestigation) && !UI.IsDrawingWheelMenu)
+             {
+                 NativeHelper.DisplayTextOnScreen(ZoneFader.TextToShow, Settings.SettingsManager.LSRHUDSettings.ZonePositionX - lowerRightHeighSpace, Settings.SettingsManager.LSRHUDSettings.ZonePositionY, Settings.SettingsManager.LSRHUDSettings.ZoneScale, Color.White, Settings.SettingsManager.LSRHUDSettings.ZoneFont, (GTATextJustification)Settings.SettingsManager.LSRHUDSettings.ZoneJustificationID, false, ZoneFader.AlphaValue);
+@@ -217,50 +221,69 @@ public class LowerRightDisplay
+         }
+         return TimeDisplay;
+     }
++    internal string GetElectroHudPursuit()
++    {
++        if (!DisplayablePlayer.IsWanted)
++            return "";
++        if (!DisplayablePlayer.PoliceResponse.WantedLevelHasBeenRadioedIn)
++            return LanguageStrings.Translate("hud.alerted", "~o~ Alerted");
++        string status;
++        if (DisplayablePlayer.IsInSearchMode)
++            status = LanguageStrings.Translate("hud.locate", "~o~ Attempting To Locate");
++        else if (DisplayablePlayer.PoliceResponse.IsWeaponsFree)
++            status = LanguageStrings.Translate("hud.weaponsFree", "~r~ Weapons Free");
++        else if (DisplayablePlayer.PoliceResponse.IsDeadlyChase)
++            status = LanguageStrings.Translate("hud.lethal", "~r~ Lethal Force Authorized");
++        else if (DisplayablePlayer.CurrentLocation.IsInside && DisplayablePlayer.AnyPoliceKnowInteriorLocation)
++            status = LanguageStrings.Translate("hud.breach", "~r~ Breaching Position");
++        else
++            status = LanguageStrings.Translate("hud.pursuit", "~r~ Pursuit Active");
++        if (Settings.SettingsManager.LSRHUDSettings.PlayerStatusIncludePoliceCount)
++            status += $" ({DisplayablePlayer.PoliceResponse.CurrentRespondingPoliceCount}) ";
++        return status;
++    }
++
++    internal string GetElectroHudVehicleContext()
++    {
++        var vehicle = DisplayablePlayer.CurrentVehicle;
++        if (vehicle == null || !(DisplayablePlayer.IsInAutomobile || DisplayablePlayer.IsOnMotorcycle))
++            return "";
++        string text = "";
++        if (vehicle.Vehicle.Exists() && vehicle.IsCar && !vehicle.Engine.IsRunning)
++            text += " " + LanguageStrings.Translate("hud.engineOff", "ENGINE OFF");
++        if (Settings.SettingsManager.VehicleSettings.AllowSetTransmissionState && vehicle.Vehicle.Exists())
++            text += $" [{vehicle.Transmission.TransmissionSymbol}] ";
++        if (DisplayablePlayer.Violations.TrafficViolations.IsViolatingAnyTrafficLaws)
++            text += $" ~r~!{UI.CurrentDefaultTextColor}";
++        if (vehicle.Indicators.HazardsOn)
++            text += $" ~o~(HAZ){UI.CurrentDefaultTextColor}";
++        else if (vehicle.Indicators.RightBlinkerOn)
++            text += $" ~y~(RI){UI.CurrentDefaultTextColor}";
++        else if (vehicle.Indicators.LeftBlinkerOn)
++            text += $" ~y~(LI){UI.CurrentDefaultTextColor}";
++        if (Settings.SettingsManager.LSRHUDSettings.VehicleDisplayIncludeCompass)
++            text += " " + NativeHelper.GetSimpleCompassHeading(DisplayablePlayer.Character.Heading);
++        if (vehicle.WasReportedStolen)
++            text += " " + LanguageStrings.Translate("hud.vehicleReportedStolen", "~r~Vehicle Reported Stolen") + UI.CurrentDefaultTextColor;
++        else if (vehicle.HasObviousFicticiousPlate(Violateable))
++            text += " " + LanguageStrings.Translate("hud.fictitiousPlate", "~r~Ficticious Plate") + UI.CurrentDefaultTextColor;
++        else if (vehicle.HasBeenSeenByPoliceDuringWanted)
++            text += " " + LanguageStrings.Translate("hud.vehicleKnownToPolice", "~o~Vehicle Known to Police") + UI.CurrentDefaultTextColor;
++        else if (vehicle.CarPlate != null && vehicle.CarPlate.IsWanted)
++            text += " " + LanguageStrings.Translate("hud.plateKnownToPolice", "~o~Plate Known to Police") + UI.CurrentDefaultTextColor;
++        if (DisplayablePlayer.TimeInCurrentVehicle > 0 && DisplayablePlayer.TimeInCurrentVehicle <= 10000 && DisplayablePlayer.IsNotWanted)
++            text += " " + vehicle.GetCarName();
++        return text;
++    }
++
+     private string GetPlayerDisplay()
+     {
+         string PlayerDisplay = "";
+         if (DisplayablePlayer.IsWanted)
+         {
+-            if (!DisplayablePlayer.PoliceResponse.WantedLevelHasBeenRadioedIn)
+-            {
+-                PlayerDisplay += LanguageStrings.Translate("hud.alerted", "~o~ Alerted") + UI.CurrentDefaultTextColor;
+-            }
+-            else
+-            {
+-                if (DisplayablePlayer.IsInSearchMode)
+-                {
+-                    PlayerDisplay += LanguageStrings.Translate("hud.locate", "~o~ Attempting To Locate");
+-                }
+-                else
+-                {
+-                    if (DisplayablePlayer.PoliceResponse.IsWeaponsFree)
+-                    {
+-                        PlayerDisplay += LanguageStrings.Translate("hud.weaponsFree", "~r~ Weapons Free");
+-                    }
+-                    else if (DisplayablePlayer.PoliceResponse.IsDeadlyChase)
+-                    {
+-                        PlayerDisplay += LanguageStrings.Translate("hud.lethal", "~r~ Lethal Force Authorized");
+-                    }
+-                    else if (DisplayablePlayer.CurrentLocation.IsInside && DisplayablePlayer.AnyPoliceKnowInteriorLocation)
+-                    {
+-                        PlayerDisplay += LanguageStrings.Translate("hud.breach", "~r~ Breaching Position");
+-                    }
+-                    else
+-                    {
+-                        PlayerDisplay += LanguageStrings.Translate("hud.pursuit", "~r~ Pursuit Active");
+-                    }
+-                }
+-                if(Settings.SettingsManager.LSRHUDSettings.PlayerStatusIncludePoliceCount)
+-                {
+-                    PlayerDisplay += $" ({DisplayablePlayer.PoliceResponse.CurrentRespondingPoliceCount}) {UI.CurrentDefaultTextColor}";
+-                }
+-                else
+-                {
+-                    PlayerDisplay += $"{UI.CurrentDefaultTextColor}";
+-                }
+-                
+-            }
++            string pursuit = GetElectroHudPursuit();
++            if (EntryPoint.ModController?.ElectroHudShowsText(512, pursuit) != true)
++                PlayerDisplay += pursuit + UI.CurrentDefaultTextColor;
+         }
+         else if (DisplayablePlayer.Investigation != null && DisplayablePlayer.Investigation.IsActive)
+         {
+@@ -335,7 +358,7 @@ public class LowerRightDisplay
+ 
+         return PlayerDisplay;
+     }
+-    private string GetStreetDisplay(bool includeAddress)
++    internal string GetStreetDisplay(bool includeAddress)
+     {
+         string StreetDisplay = "";
+ 
+@@ -391,11 +414,7 @@ public class LowerRightDisplay
+ 
+ 
+ 
+-            if (DisplayablePlayer.CurrentVehicle.Vehicle.Exists() && DisplayablePlayer.CurrentVehicle.IsCar && !DisplayablePlayer.CurrentVehicle.Engine.IsRunning)
+-            {
+-                CurrentSpeedDisplay = $" {UI.CurrentDefaultTextColor}" + LanguageStrings.Translate("hud.engineOff", "ENGINE OFF");
+-            }
+-            else
++            if (!(DisplayablePlayer.CurrentVehicle.Vehicle.Exists() && DisplayablePlayer.CurrentVehicle.IsCar && !DisplayablePlayer.CurrentVehicle.Engine.IsRunning))
+             {
+                 string ColorPrefx = UI.CurrentDefaultTextColor;
+                 if (DisplayablePlayer.Violations.TrafficViolations.IsFelonySpeeding)
+@@ -405,120 +424,47 @@ public class LowerRightDisplay
+ 
+                 if (DisplayablePlayer.CurrentLocation.CurrentStreet != null)
+                 {
+-                    if (Settings.SettingsManager.LSRHUDSettings.SpeedDisplayUnits == "MPH")
+-                    {
+-                        if (Settings.SettingsManager.LSRHUDSettings.VehicleDisplayIncludeTextSpeedLimit)
+-                        {
+-                            if (Settings.SettingsManager.LSRHUDSettings.VehicleDisplayIncludeCurrentSpeed)
+-                            {
+-                                CurrentSpeedDisplay = $"{ColorPrefx}{Math.Round(DisplayablePlayer.VehicleSpeedMPH, MidpointRounding.AwayFromZero)}{UI.CurrentDefaultTextColor} ({Math.Round(DisplayablePlayer.CurrentLocation.CurrentStreet.SpeedLimitMPH, MidpointRounding.AwayFromZero)} {UI.CurrentDefaultTextColor}MPH)";
+-                            }
+-                            else
+-                            {
+-                                CurrentSpeedDisplay = $"({Math.Round(DisplayablePlayer.CurrentLocation.CurrentStreet.SpeedLimitMPH, MidpointRounding.AwayFromZero)} {UI.CurrentDefaultTextColor}MPH)";
+-                            }
+-                        }
+-                        else
+-                        {
+-                            if (Settings.SettingsManager.LSRHUDSettings.VehicleDisplayIncludeCurrentSpeed)
+-                            {
+-                                CurrentSpeedDisplay = $"{ColorPrefx}{Math.Round(DisplayablePlayer.VehicleSpeedMPH, MidpointRounding.AwayFromZero)} {UI.CurrentDefaultTextColor}MPH";
+-                            }
+-                            else
+-                            {
+-                                CurrentSpeedDisplay = "";
+-                            }
+-                        }
+-                    }
+-                    else if (Settings.SettingsManager.LSRHUDSettings.SpeedDisplayUnits == "KM/H")
++                    var display = Settings.SettingsManager.LSRHUDSettings;
++                    string unit = display.SpeedDisplayUnits;
++                    var street = DisplayablePlayer.CurrentLocation.CurrentStreet;
++                    uint handle = DisplayablePlayer.CurrentVehicle.Vehicle == null ? 0u
++                        : (uint)DisplayablePlayer.CurrentVehicle.Vehicle.Handle;
++                    var controller = EntryPoint.ModController;
++                    bool showSpeed = display.VehicleDisplayIncludeCurrentSpeed
++                        && controller?.ElectroHudShowsVehicle(256, handle) != true;
++                    bool showLimit = display.VehicleDisplayIncludeTextSpeedLimit
++                        && controller?.ElectroHudShowsLimit(handle, street) != true;
++                    if (unit == "MPH" || unit == "KM/H")
+                     {
+-                        if (Settings.SettingsManager.LSRHUDSettings.VehicleDisplayIncludeTextSpeedLimit)
+-                        {
+-                            if (Settings.SettingsManager.LSRHUDSettings.VehicleDisplayIncludeCurrentSpeed)
+-                            {
+-                                CurrentSpeedDisplay = $"{ColorPrefx}{Math.Round(DisplayablePlayer.VehicleSpeedKMH, MidpointRounding.AwayFromZero)}{UI.CurrentDefaultTextColor} ({Math.Round(DisplayablePlayer.CurrentLocation.CurrentStreet.SpeedLimitKMH, MidpointRounding.AwayFromZero)} {UI.CurrentDefaultTextColor}KM/H)";
+-                            }
+-                            else
+-                            {
+-                                CurrentSpeedDisplay = $"({Math.Round(DisplayablePlayer.CurrentLocation.CurrentStreet.SpeedLimitKMH, MidpointRounding.AwayFromZero)} {UI.CurrentDefaultTextColor}KM/H)";
+-                            }
+-                        }
+-                        else
+-                        {
+-                            if (Settings.SettingsManager.LSRHUDSettings.VehicleDisplayIncludeCurrentSpeed)
+-                            {
+-                                CurrentSpeedDisplay = $"{ColorPrefx}{Math.Round(DisplayablePlayer.VehicleSpeedKMH, MidpointRounding.AwayFromZero)} {UI.CurrentDefaultTextColor}KM/H";
+-                            }
+-                            else
+-                            {
+-                                CurrentSpeedDisplay = "";
+-                            }
+-                        }
++                        float speed = unit == "MPH" ? DisplayablePlayer.VehicleSpeedMPH : DisplayablePlayer.VehicleSpeedKMH;
++                        float limit = unit == "MPH" ? street.SpeedLimitMPH : street.SpeedLimitKMH;
++                        if (showSpeed)
++                            CurrentSpeedDisplay = $"{ColorPrefx}{Math.Round(speed, MidpointRounding.AwayFromZero)}{UI.CurrentDefaultTextColor}";
++                        if (showLimit)
++                            CurrentSpeedDisplay += $"{(showSpeed ? " " : "")}({Math.Round(limit, MidpointRounding.AwayFromZero)} {UI.CurrentDefaultTextColor}{unit})";
++                        else if (showSpeed)
++                            CurrentSpeedDisplay += $" {UI.CurrentDefaultTextColor}{unit}";
+                     }
+                 }
+             }
+ 
+ 
+ 
+-            if (Settings.SettingsManager.VehicleSettings.AllowSetTransmissionState && DisplayablePlayer.CurrentVehicle.Vehicle.Exists())
+-            {
+-                CurrentSpeedDisplay += $" [{DisplayablePlayer.CurrentVehicle.Transmission.TransmissionSymbol}] ";
+-            }
+-
+-            if (DisplayablePlayer.Violations.TrafficViolations.IsViolatingAnyTrafficLaws)
+-            {
+-                CurrentSpeedDisplay += $" ~r~!{UI.CurrentDefaultTextColor}";
+-            }
+-            if (DisplayablePlayer.CurrentVehicle.Indicators.HazardsOn)
+-            {
+-                CurrentSpeedDisplay += $" ~o~(HAZ){UI.CurrentDefaultTextColor}";
+-            }
+-            else if (DisplayablePlayer.CurrentVehicle.Indicators.RightBlinkerOn)
+-            {
+-                CurrentSpeedDisplay += $" ~y~(RI){UI.CurrentDefaultTextColor}";
+-            }
+-            else if (DisplayablePlayer.CurrentVehicle.Indicators.LeftBlinkerOn)
+-            {
+-                CurrentSpeedDisplay += $" ~y~(LI){UI.CurrentDefaultTextColor}";
+-            }
+-            if (Settings.SettingsManager.VehicleSettings.UseCustomFuelSystem && DisplayablePlayer.CurrentVehicle.RequiresFuel)
++            if (Settings.SettingsManager.VehicleSettings.UseCustomFuelSystem && DisplayablePlayer.CurrentVehicle.RequiresFuel
++                && (DisplayablePlayer.CurrentVehicle.Vehicle == null || !DisplayablePlayer.CurrentVehicle.Vehicle.Exists()
++                    || EntryPoint.ModController?.ElectroHudShowsFuel((uint)DisplayablePlayer.CurrentVehicle.Vehicle.Handle) != true))
+             {
+                 CurrentSpeedDisplay += $"{UI.CurrentDefaultTextColor} " + DisplayablePlayer.CurrentVehicle.FuelTank.UIText;
+             }
+-            if (Settings.SettingsManager.LSRHUDSettings.VehicleDisplayIncludeCompass)
+-            {
+-                string Heading = NativeHelper.GetSimpleCompassHeading(DisplayablePlayer.Character.Heading);
+-                CurrentSpeedDisplay += $" {Heading}";
+-            }
+-
+-
+-            if (DisplayablePlayer.CurrentVehicle != null)
+-            {
+-                if (DisplayablePlayer.CurrentVehicle.WasReportedStolen)
+-                {
+-                    CurrentSpeedDisplay += $" ~r~Vehicle Reported Stolen{UI.CurrentDefaultTextColor}";
+-                }
+-                else if (DisplayablePlayer.CurrentVehicle.HasObviousFicticiousPlate(Violateable))
+-                {
+-                    CurrentSpeedDisplay += $" ~r~Ficticious Plate{UI.CurrentDefaultTextColor}";
+-                }
+-                else if (DisplayablePlayer.CurrentVehicle.HasBeenSeenByPoliceDuringWanted)
+-                {
+-                    CurrentSpeedDisplay += $" ~o~Vehicle Known to Police{UI.CurrentDefaultTextColor}";
+-                }
+-                else if (DisplayablePlayer.CurrentVehicle.CarPlate != null && DisplayablePlayer.CurrentVehicle.CarPlate.IsWanted)
+-                {
+-                    CurrentSpeedDisplay += $" ~o~Plate Known to Police{UI.CurrentDefaultTextColor}";
+-                }
+-                if (DisplayablePlayer.TimeInCurrentVehicle > 0 && DisplayablePlayer.TimeInCurrentVehicle <= 10000 && DisplayablePlayer.IsNotWanted)
+-                {
+-                    CurrentSpeedDisplay += " " + DisplayablePlayer.CurrentVehicle.GetCarName();
+-                }
+-            }
++            string context = GetElectroHudVehicleContext();
++            uint contextHandle = DisplayablePlayer.CurrentVehicle.Vehicle == null ? 0u
++                : (uint)DisplayablePlayer.CurrentVehicle.Vehicle.Handle;
++            if (EntryPoint.ModController?.ElectroHudShowsVehicle(1024, contextHandle, context) != true)
++                CurrentSpeedDisplay += context;
+         }
+         return CurrentSpeedDisplay;
+     }
+-    private string GetZoneDisplay()
++    internal string GetZoneDisplay()
+     {
+          if (DisplayablePlayer.InteriorManager.IsInsideTeleportInterior)
+         {
+diff --git a/Los Santos RED/lsr/UI/TopRightMenu.cs b/Los Santos RED/lsr/UI/TopRightMenu.cs
+index f778eca2637a461e4170d416a9dfe5338b67646b..edd7c3f27e81ff55b7fe2920163824d3b3075935 100644
+--- a/Los Santos RED/lsr/UI/TopRightMenu.cs	
++++ b/Los Santos RED/lsr/UI/TopRightMenu.cs	
+@@ -210,11 +210,11 @@ public class TopRightMenu
+             string NeedsString = "";
+             if (UI.IsDrawingWheelMenu || DisplayablePlayer.IsSleeping || DisplayablePlayer.HealthManager.RecentlyDrainedHealth)
+             {
+-                NeedsString = DisplayablePlayer.HumanState.DisplayString();
++                NeedsString = DisplayablePlayer.HumanState.DisplayString(EntryPoint.ModController?.ElectroHudNeedsMask ?? 0);
+             }
+             else
+             {
+-                NeedsString = DisplayablePlayer.HumanState.RecentlyChangedString();
++                NeedsString = DisplayablePlayer.HumanState.RecentlyChangedString(EntryPoint.ModController?.ElectroHudNeedsMask ?? 0);
+             }
+             if (DisplayablePlayer.HealthManager.RecentlyDrainedHealth)
+             {
+diff --git a/Los Santos RED/lsr/UI/UI.cs b/Los Santos RED/lsr/UI/UI.cs
+index fa36d917e271d44a43f0fa677118954a523340d3..dfd641a12ce30313f1960a7ccf509abb4f371dd9 100644
+--- a/Los Santos RED/lsr/UI/UI.cs	
++++ b/Los Santos RED/lsr/UI/UI.cs	
+@@ -23,6 +23,7 @@ public class UI : IMenuProvideable
+     private ISettingsProvideable Settings;
+ 
+     private LowerRightDisplay LowerRightDisplay;
++    internal LowerRightDisplay ElectroHudDisplay => LowerRightDisplay;
+     private TopRightMenu TopRightMenu;
+     private MarkerManager MarkerManager;
+     private PopUpMenu ActionPopUpMenu;

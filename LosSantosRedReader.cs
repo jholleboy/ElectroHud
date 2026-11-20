@@ -34,17 +34,17 @@ namespace ElectroHud
             public uint Handle;
             public float Hunger, Thirst, Sleep, Fuel, Limit;
             public int Wanted;
-            public string Region, Street, Agency, Gang, Pursuit, Recognition;
+            public string Region, Street, Agency, Gang, Pursuit, VehicleContext;
         }
 
-        private const int Magic = 0x45485233;
-        private const int Size = 1232;
+        private const int Magic = 0x45485234;
+        private const int Size = 8192;
 
         public LosSantosRedReader(Settings settings)
         {
             this.settings = settings;
             using (var process = Process.GetCurrentProcess())
-                channel = @"Local\ElectroHud.Lsr.v3." + process.Id;
+                channel = @"Local\ElectroHud.Lsr.v4." + process.Id;
             Report("Estresse", "oculto: o LS RED de referência não fornece esta estatística");
         }
 
@@ -181,7 +181,7 @@ namespace ElectroHud
 
             int flags = snapshot.Flags;
             uint tracked = snapshot.Handle;
-            Report("Ponte", "snapshot v3 recebido");
+            Report("Ponte", "snapshot v4 recebido");
             Report("Detecção LS RED", "detectado pelo publicador IPC");
             Report("Instância LS RED", "Player ativo confirmado pelo publicador");
             sample.Menu |= (flags & 1) != 0;
@@ -195,7 +195,10 @@ namespace ElectroHud
             sample.Gang = snapshot.Gang;
             bool sameVehicle = handle != 0 && handle == tracked;
             if (sameVehicle)
-                sample.Recognition = snapshot.Recognition;
+            {
+                sample.VehicleContext = snapshot.VehicleContext;
+                sample.FelonySpeeding = (flags & 1024) != 0;
+            }
             if (sameVehicle && (flags & 128) != 0 && snapshot.Limit > 0 && !float.IsInfinity(snapshot.Limit))
                 sample.SpeedLimit = snapshot.Limit;
             Report("Limite de velocidade", !sameVehicle ? "sem veículo rastreado correspondente"
@@ -235,7 +238,10 @@ namespace ElectroHud
                     return;
                 long stamp = view.ReadInt64(8);
                 if (cached.Timestamp == stamp) return;
-                cached = view.ReadInt32(0) == Magic && stamp > 0 ? new BridgeSnapshot
+                cached = default(BridgeSnapshot);
+                if (view.ReadInt32(0) != Magic || stamp <= 0)
+                    return;
+                var next = new BridgeSnapshot
                 {
                     Timestamp = stamp,
                     Handle = view.ReadUInt32(4),
@@ -245,14 +251,36 @@ namespace ElectroHud
                     Fuel = view.ReadSingle(28),
                     Flags = view.ReadInt32(32),
                     Wanted = view.ReadInt32(36),
-                    Limit = view.ReadSingle(40),
-                    Region = ReadText(64),
-                    Street = ReadText(256),
-                    Agency = ReadText(448),
-                    Gang = ReadText(640),
-                    Pursuit = ReadText(840),
-                    Recognition = ReadText(1032)
-                } : default(BridgeSnapshot);
+                    Limit = view.ReadSingle(40)
+                };
+                int length = view.ReadInt32(44);
+                if (length < 0 || length > 8120)
+                    return;
+                int end = 64 + length;
+                for (int offset = 64; offset < end;)
+                {
+                    if (end - offset < 8)
+                        return;
+                    int id = view.ReadInt32(offset);
+                    int size = view.ReadInt32(offset + 4);
+                    offset += 8;
+                    if (size <= 0 || size > end - offset)
+                        return;
+                    view.ReadArray(offset, textBuffer, 0, size);
+                    string value = System.Text.Encoding.UTF8.GetString(textBuffer, 0, size);
+                    switch (id)
+                    {
+                        case 1: next.Agency = value; break;
+                        case 2: next.Gang = value; break;
+                        case 3: if (next.Region == null) next.Region = value; break;
+                        case 64: next.Region = value; break;
+                        case 128: next.Street = value; break;
+                        case 512: next.Pursuit = value; break;
+                        case 1024: next.VehicleContext = value; break;
+                    }
+                    offset += size;
+                }
+                cached = next;
             }
             finally
             {
@@ -261,14 +289,7 @@ namespace ElectroHud
             }
         }
 
-        private readonly byte[] textBuffer = new byte[192];
-
-        private string ReadText(long offset)
-        {
-            view.ReadArray(offset, textBuffer, 0, textBuffer.Length);
-            int length = Array.IndexOf(textBuffer, (byte)0);
-            return System.Text.Encoding.UTF8.GetString(textBuffer, 0, length < 0 ? textBuffer.Length : length);
-        }
+        private readonly byte[] textBuffer = new byte[8120];
 
         public void PublishVisibility(int mask, uint vehicleHandle, long snapshot = 0)
         {
@@ -281,9 +302,9 @@ namespace ElectroHud
                 catch (AbandonedMutexException) { held = true; mask = 0; }
                 if (!held)
                     return;
-                view.Write(832, mask);
-                view.Write(836, vehicleHandle);
-                view.Write(1224, snapshot);
+                view.Write(8184, mask);
+                view.Write(8188, vehicleHandle);
+                view.Write(56, snapshot);
                 view.Write(48, mask == 0 ? 0L : Stopwatch.GetTimestamp());
             }
             catch (Exception e) when (e is IOException || e is UnauthorizedAccessException || e is ObjectDisposedException)

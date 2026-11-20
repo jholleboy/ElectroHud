@@ -6,6 +6,9 @@
   <BottomMargin>0.045</BottomMargin>
   <Scale>0.75</Scale>
   <ShowTerritory>true</ShowTerritory>
+  <TerritoryScale>1</TerritoryScale>
+  <TerritoryMaxWidth>510</TerritoryMaxWidth>
+  <TerritoryLineSpacing>4</TerritoryLineSpacing>
   <ShowVehicle>true</ShowVehicle>
   <SuppressReplacedLsrIndicators>true</SuppressReplacedLsrIndicators>
   <Opacity>0.86</Opacity>

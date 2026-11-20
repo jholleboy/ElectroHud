@@ -38,6 +38,9 @@ namespace ElectroHud
         public float BottomMargin { get; set; } = .045f;
         public float Scale { get; set; } = .75f;
         public bool ShowTerritory { get; set; } = true;
+        public float TerritoryScale { get; set; } = 1f;
+        public int TerritoryMaxWidth { get; set; } = 510;
+        public float TerritoryLineSpacing { get; set; } = 4f;
         public bool ShowVehicle { get; set; } = true;
         public bool SuppressReplacedLsrIndicators { get; set; } = true;
         public float Opacity { get; set; } = .86f;
@@ -72,6 +75,9 @@ namespace ElectroHud
                     result.TopOffset = InRange(result.TopOffset, .125f, .42f, .125f);
                     result.BottomMargin = InRange(result.BottomMargin, 0, .23f, .045f);
                     result.Scale = InRange(result.Scale, .35f, 2, .75f);
+                    result.TerritoryScale = InRange(result.TerritoryScale, .5f, 1.5f, 1f);
+                    result.TerritoryMaxWidth = Math.Max(320, Math.Min(640, result.TerritoryMaxWidth));
+                    result.TerritoryLineSpacing = InRange(result.TerritoryLineSpacing, 1, 12, 4f);
                     result.Opacity = InRange(result.Opacity, 0, 1, .86f);
                     return result;
                 }
@@ -92,11 +98,11 @@ namespace ElectroHud
     internal struct Sample
     {
         public bool Visible;
-        public bool Menu, InVehicle, Searching;
+        public bool Menu, InVehicle, Searching, FelonySpeeding;
         public uint VehicleHandle;
         public int Wanted;
         public float Speed, SpeedLimit;
-        public string Region, Street, Agency, Gang, Pursuit, Recognition;
+        public string Region, Street, Agency, Gang, Pursuit, VehicleContext;
         public long BridgeStamp;
         public float SafeZone;
         public Size Screen;

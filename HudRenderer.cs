@@ -25,11 +25,12 @@ namespace ElectroHud
         private readonly string cache;
         private static readonly int[] Order = { 0, 6, 1, 2, 3 };
         private long previousFrame;
-        private const float TerritoryWidth = 405;
-        private const float RowHeight = 27;
+        private float TerritoryWidth => settings.TerritoryMaxWidth;
+        private readonly float[] rowHeights = new float[7];
         private readonly string[] territoryText = new string[7];
         private readonly Texture[] territory = new Texture[7];
         private readonly Texture[] vehicleDigits = new Texture[10];
+        private readonly Texture[] warningDigits = new Texture[10];
         private Texture speedUnit;
         private readonly bool[] fullTerritoryRow = new bool[7];
         private static readonly int[] TerritoryBits = { 64, 128, 0, 512, 1024, 0, 0 };
@@ -63,7 +64,10 @@ namespace ElectroHud
             try
             {
                 for (int i = 0; i < vehicleDigits.Length; i++)
+                {
                     vehicleDigits[i] = Text("speed-" + i, i.ToString(), WithOpacity(Color.White, 1), 58, 43, 69, true);
+                    warningDigits[i] = Text("speed-warning-" + i, i.ToString(), WithOpacity(Color.Tomato, 1), 58, 43, 69, true);
+                }
                 speedUnit = Text("speed-unit", "km/h", WithOpacity(Color.White, .9f), 24, 120, 36);
 
                 var options = settings.Indicators;
@@ -111,12 +115,13 @@ namespace ElectroHud
             if (settings.ShowTerritory)
             {
                 string region = PlainText(sample.Region);
-                SetRow(0, region, Color.White);
-                SetRow(1, PlainText(sample.Street), Color.Gainsboro);
+                SetRow(0, region, Color.White, CanReplace(sample.Region));
+                SetRow(1, PlainText(sample.Street), Color.Gainsboro, CanReplace(sample.Street));
                 SetRow(2, sample.Wanted <= 0 ? "Sem nível de procurado" :
                     "Procurado: nível " + sample.Wanted + (sample.Searching ? " · Em busca" : ""), Color.White);
-                SetRow(3, PlainText(sample.Pursuit), Color.Orange);
-                SetRow(4, PlainText(sample.Recognition), Color.Orange);
+                SetRow(3, PlainText(sample.Pursuit), Color.Orange, CanReplace(sample.Pursuit));
+                SetRow(4, PlainText(sample.VehicleContext), sample.VehicleContext?.Contains("~r~") == true
+                    ? Color.Tomato : Color.Orange, CanReplace(sample.VehicleContext));
                 SetRow(5, AdditionalName(region, sample.Agency), Color.DeepSkyBlue);
                 SetRow(6, AdditionalName(region, sample.Gang), Color.Orchid);
             }
@@ -142,11 +147,58 @@ namespace ElectroHud
                 && region.IndexOf(label, StringComparison.OrdinalIgnoreCase) >= 0) ? null : label;
         }
 
-        private void SetRow(int index, string value, Color color)
+        private static bool CanReplace(string raw)
         {
-            if (territoryText[index] != value)
-                SetText(ref territoryText[index], ref territory[index], value, WithOpacity(color, 1),
-                    32, 746, 52, index == 0, true, out fullTerritoryRow[index]);
+            if (raw == null)
+                return false;
+            foreach (System.Text.RegularExpressions.Match token in GtaFormatting.Matches(raw))
+            {
+                if (token.Length != 3 && !token.Value.StartsWith("~HUD_COLOUR_", StringComparison.OrdinalIgnoreCase))
+                    return false; // Preserve native icons, input glyphs and other commands.
+            }
+            return true;
+        }
+
+        private readonly bool[] replaceableRows = new bool[7];
+
+        private void SetRow(int index, string value, Color color, bool replaceable = false)
+        {
+            replaceableRows[index] = replaceable;
+            if (territoryText[index] == value)
+                return;
+            Texture next = null;
+            float height = 0;
+            bool whole = false;
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                int width = (settings.TerritoryMaxWidth - 32) * 2;
+                const int maxHeight = 180;
+                string name = "territory-" + textureSerial++;
+                string path = Path.Combine(cache, name + ".png");
+                using (var image = new Bitmap(width, maxHeight, PixelFormat.Format32bppArgb))
+                using (var graphics = System.Drawing.Graphics.FromImage(image))
+                using (var font = new Font("Consolas", 34, index == 0 ? FontStyle.Bold : FontStyle.Regular, GraphicsUnit.Pixel))
+                using (var brush = new SolidBrush(WithOpacity(color, 1)))
+                using (var format = new StringFormat { Trimming = StringTrimming.EllipsisWord, FormatFlags = StringFormatFlags.LineLimit })
+                {
+                    graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+                    var measured = graphics.MeasureString(value, font, new SizeF(width, maxHeight), format,
+                        out int fitted, out _);
+                    int pixels = Math.Max(44, Math.Min(maxHeight, (int)Math.Ceiling(measured.Height) + 2));
+                    graphics.MeasureString(value, font, new SizeF(width, pixels), format, out fitted, out _);
+                    whole = fitted == value.Length;
+                    graphics.DrawString(value, font, brush, new RectangleF(0, 0, width, pixels), format);
+                    using (var cropped = image.Clone(new Rectangle(0, 0, width, pixels), PixelFormat.Format32bppArgb))
+                        cropped.Save(path, ImageFormat.Png);
+                    height = pixels / 2f;
+                }
+                next = Load(path);
+                DeleteCachedText(name);
+            }
+            ReplaceTexture(ref territory[index], next);
+            territoryText[index] = value;
+            fullTerritoryRow[index] = whole;
+            rowHeights[index] = height;
         }
 
         private void SetText(ref string current, ref Texture texture, string value, Color color, float fontSize,
@@ -160,13 +212,18 @@ namespace ElectroHud
                 Text(name, value, color, fontSize, width, height, bold, left, out whole);
             if (next != null)
                 DeleteCachedText(name);
+            ReplaceTexture(ref texture, next);
+            current = value;
+        }
+
+        private void ReplaceTexture(ref Texture texture, Texture next)
+        {
             if (texture != null)
             {
                 textures.Remove(texture);
                 if ((object)texture is IDisposable disposable)
                     disposable.Dispose();
             }
-            current = value;
             texture = next;
         }
 
@@ -187,31 +244,32 @@ namespace ElectroHud
             float elapsed = previousFrame == 0 ? .05f : Math.Min(.12f, (now - previousFrame) / (float)Stopwatch.Frequency);
             previousFrame = now;
             float progress = settings.Animate ? 1 - (float)Math.Exp(-12 * elapsed) : 1f;
-            int count = 0, rows = 0;
+            int count = 0;
+            float rowHeight = 0;
             foreach (int slot in Order)
                 if (Available(sample, slot))
                     count++;
-            foreach (var row in territory)
-                if (row != null)
-                    rows++;
+            foreach (float row in rowHeights)
+                if (row > 0)
+                    rowHeight += row + settings.TerritoryLineSpacing;
 
             bool vehicle = settings.ShowVehicle && sample.InVehicle && !float.IsNaN(sample.Speed);
             bool fuel = vehicle && Available(sample, (int)Indicator.Fuel);
             bool limit = vehicle && limitTexture != null;
             float needsWidth = count * CardWidth + 22;
             float vehicleWidth = 156 + (fuel ? 108 : 0);
-            float territoryHeight = rows == 0 ? 0 : 16 + rows * RowHeight;
+            float territoryHeight = rowHeight == 0 ? 0 : 16 + rowHeight;
             float right = width * (1 - (1 - sample.SafeZone) / 2 - settings.RightMargin);
             float top = height * ((1 - sample.SafeZone) / 2 + settings.TopOffset);
             float bottom = height * (1 - (1 - sample.SafeZone) / 2 - settings.BottomMargin);
             float scale = Math.Min(width / 1920f, height / 1080f) * settings.Scale;
-            scale = Math.Min(scale, width * .48f / Math.Max(needsWidth, TerritoryWidth));
+            // Match the V4 vehicle anchor and sizing independently of the territory settings.
+            scale = Math.Min(scale, width * .48f / Math.Max(needsWidth, 405));
             float vehicleScale = scale;
-            float upperHeight = (count > 0 ? PanelHeight + 9 : 0) + territoryHeight;
-            float availableHeight = bottom - top - (vehicle ? (PanelHeight + 12) * vehicleScale : 0);
-            scale = Math.Min(scale, availableHeight / Math.Max(1, upperHeight));
-            if (scale <= 0)
-                return 0;
+            float needsHeight = count > 0 ? (PanelHeight + 9) * scale : 0;
+            float availableHeight = bottom - top - needsHeight - (vehicle ? (PanelHeight + 12) * vehicleScale : 0);
+            float territoryScale = Math.Min(scale / settings.Scale * settings.TerritoryScale,
+                Math.Min(availableHeight / Math.Max(1, territoryHeight), width * .48f / TerritoryWidth));
 
             int mask = 0;
             if (count > 0)
@@ -229,17 +287,18 @@ namespace ElectroHud
                 }
                 top += (PanelHeight + 9) * scale;
             }
-            if (rows > 0)
+            if (territoryHeight > 0 && territoryScale >= .35f)
             {
-                float left = right - TerritoryWidth * scale;
-                DrawPanel(frame, left, top, TerritoryWidth, scale, territoryHeight);
-                int index = 0;
+                float left = right - TerritoryWidth * territoryScale;
+                DrawPanel(frame, left, top, TerritoryWidth, territoryScale, territoryHeight);
+                float y = 8;
                 for (int i = 0; i < territory.Length; i++)
                 {
                     if (territory[i] == null)
                         continue;
-                    Sprite(frame, territory[i], left, top, scale, 16, 8 + index++ * RowHeight, 373, 26);
-                    if (fullTerritoryRow[i])
+                    Sprite(frame, territory[i], left, top, territoryScale, 16, y, TerritoryWidth - 32, rowHeights[i]);
+                    y += rowHeights[i] + settings.TerritoryLineSpacing;
+                    if (fullTerritoryRow[i] && replaceableRows[i])
                         mask |= TerritoryBits[i];
                 }
             }
@@ -263,7 +322,8 @@ namespace ElectroHud
                     Rect(frame, speedX, y, scale, 77 + point.X * 1.85f, 56 + point.Y * 1.85f,
                         2.5f, 2.5f, i < 14 ? magenta : cyan);
                 }
-                DrawNumber(frame, sample.Speed, speedX, y, scale, 78, limit ? 14 : 21, 1);
+                DrawNumber(frame, sample.Speed, speedX, y, scale, 78, limit ? 14 : 21,
+                    sample.FelonySpeeding ? warningDigits : vehicleDigits);
                 mask |= 256;
                 Sprite(frame, speedUnit, speedX, y, scale, 48, limit ? 58 : 71, 60, 18);
                 if (limit)
@@ -298,13 +358,13 @@ namespace ElectroHud
             DrawGauge(f, gauge, value, x, y, scale, now);
         }
 
-        private void DrawNumber(GraphicsEventArgs f, float value, float x, float y, float scale, float center, float top, float size)
+        private void DrawNumber(GraphicsEventArgs f, float value, float x, float y, float scale, float center, float top, Texture[] digits)
         {
             int number = (int)Math.Round(Math.Max(0, Math.Min(999, value)));
             int divisor = number >= 100 ? 100 : number >= 10 ? 10 : 1;
-            float position = center - (divisor == 100 ? 3 : divisor == 10 ? 2 : 1) * 15 * size / 2;
-            for (; divisor > 0; divisor /= 10, position += 15 * size)
-                Sprite(f, vehicleDigits[number / divisor % 10], x, y, scale, position, top, 21.5f * size, 49 * size);
+            float position = center - (divisor == 100 ? 3 : divisor == 10 ? 2 : 1) * 15f / 2;
+            for (; divisor > 0; divisor /= 10, position += 15)
+                Sprite(f, digits[number / divisor % 10], x, y, scale, position, top, 21.5f, 49);
         }
 
         private void DrawPanel(GraphicsEventArgs f, float x, float y, float width, float scale, float height = PanelHeight)
