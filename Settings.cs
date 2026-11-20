@@ -92,11 +92,12 @@ namespace ElectroHud
     internal struct Sample
     {
         public bool Visible;
-        public bool Menu, InVehicle, Searching, RoadVehicle;
+        public bool Menu, InVehicle, Searching;
         public uint VehicleHandle;
         public int Wanted;
         public float Speed, SpeedLimit;
-        public string Region, Street, Agency, Gang;
+        public string Region, Street, Agency, Gang, Pursuit, Recognition;
+        public long BridgeStamp;
         public float SafeZone;
         public Size Screen;
         public float Health, Hunger, Thirst, Sleep, Fuel, Armor;

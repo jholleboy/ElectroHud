@@ -27,10 +27,14 @@ namespace ElectroHud
         private long previousFrame;
         private const float TerritoryWidth = 405;
         private const float RowHeight = 27;
-        private readonly string[] territoryText = new string[5];
-        private readonly Texture[] territory = new Texture[5];
+        private readonly string[] territoryText = new string[7];
+        private readonly Texture[] territory = new Texture[7];
         private readonly Texture[] vehicleDigits = new Texture[10];
-        private Texture speedUnit, limitLabel;
+        private Texture speedUnit;
+        private readonly bool[] fullTerritoryRow = new bool[7];
+        private static readonly int[] TerritoryBits = { 64, 128, 0, 512, 1024, 0, 0 };
+        private static readonly System.Text.RegularExpressions.Regex GtaFormatting =
+            new System.Text.RegularExpressions.Regex(@"~[a-zA-Z0-9_]+~");
         private int textureSerial;
 
 
@@ -61,7 +65,7 @@ namespace ElectroHud
                 for (int i = 0; i < vehicleDigits.Length; i++)
                     vehicleDigits[i] = Text("speed-" + i, i.ToString(), WithOpacity(Color.White, 1), 58, 43, 69, true);
                 speedUnit = Text("speed-unit", "km/h", WithOpacity(Color.White, .9f), 24, 120, 36);
-                limitLabel = Text("limit-label", "Limite", WithOpacity(Color.White, .9f), 23, 132, 36);
+
                 var options = settings.Indicators;
                 for (int i = 0; i < options.Length; ++i)
                 {
@@ -104,34 +108,66 @@ namespace ElectroHud
 
         public void PrepareTerritory(Sample sample)
         {
-            if (!settings.ShowTerritory)
-                return;
-            SetRow(0, sample.Region, Color.White);
-            SetRow(1, sample.Street, Color.Gainsboro);
-            SetRow(2, sample.Wanted <= 0 ? "Sem nível de procurado" :
-                "Procurado: nível " + sample.Wanted + (sample.Searching ? " · Em busca" : ""), Color.White);
-            SetRow(3, sample.Agency, Color.DeepSkyBlue);
-            SetRow(4, sample.Gang, Color.Orchid);
+            if (settings.ShowTerritory)
+            {
+                string region = PlainText(sample.Region);
+                SetRow(0, region, Color.White);
+                SetRow(1, PlainText(sample.Street), Color.Gainsboro);
+                SetRow(2, sample.Wanted <= 0 ? "Sem nível de procurado" :
+                    "Procurado: nível " + sample.Wanted + (sample.Searching ? " · Em busca" : ""), Color.White);
+                SetRow(3, PlainText(sample.Pursuit), Color.Orange);
+                SetRow(4, PlainText(sample.Recognition), Color.Orange);
+                SetRow(5, AdditionalName(region, sample.Agency), Color.DeepSkyBlue);
+                SetRow(6, AdditionalName(region, sample.Gang), Color.Orchid);
+            }
+
+            int limit = settings.ShowVehicle && sample.InVehicle && sample.SpeedLimit > 0 && sample.SpeedLimit <= 999
+                ? (int)Math.Round(sample.SpeedLimit, MidpointRounding.AwayFromZero) : 0;
+            SetText(ref limitText, ref limitTexture, limit == 0 ? null : "Limite: " + limit + " km/h",
+                WithOpacity(Color.White, .94f), 23, 296, 34, false, false, out _);
+        }
+
+        private string limitText;
+        private Texture limitTexture;
+
+        private static string PlainText(string raw)
+        {
+            return raw == null ? null : GtaFormatting.Replace(raw.Replace("~n~", " "), "").Trim();
+        }
+
+        private static string AdditionalName(string region, string name)
+        {
+            string label = PlainText(name);
+            return string.IsNullOrEmpty(label) || (region != null
+                && region.IndexOf(label, StringComparison.OrdinalIgnoreCase) >= 0) ? null : label;
         }
 
         private void SetRow(int index, string value, Color color)
         {
-            if (territoryText[index] == value)
+            if (territoryText[index] != value)
+                SetText(ref territoryText[index], ref territory[index], value, WithOpacity(color, 1),
+                    32, 746, 52, index == 0, true, out fullTerritoryRow[index]);
+        }
+
+        private void SetText(ref string current, ref Texture texture, string value, Color color, float fontSize,
+            int width, int height, bool bold, bool left, out bool whole)
+        {
+            whole = false;
+            if (current == value)
                 return;
-            string name = "territory-" + textureSerial++;
+            string name = "dynamic-" + textureSerial++;
             Texture next = string.IsNullOrWhiteSpace(value) ? null :
-                Text(name, value, WithOpacity(color, 1), 32, 746, 52, index == 0, true);
+                Text(name, value, color, fontSize, width, height, bold, left, out whole);
             if (next != null)
                 DeleteCachedText(name);
-            var previous = territory[index];
-            if (previous != null)
+            if (texture != null)
             {
-                textures.Remove(previous);
-                if ((object)previous is IDisposable disposable)
+                textures.Remove(texture);
+                if ((object)texture is IDisposable disposable)
                     disposable.Dispose();
             }
-            territoryText[index] = value;
-            territory[index] = next;
+            current = value;
+            texture = next;
         }
 
         private void DeleteCachedText(string name)
@@ -161,17 +197,19 @@ namespace ElectroHud
 
             bool vehicle = settings.ShowVehicle && sample.InVehicle && !float.IsNaN(sample.Speed);
             bool fuel = vehicle && Available(sample, (int)Indicator.Fuel);
-            bool limit = vehicle && sample.SpeedLimit > 0 && sample.SpeedLimit <= 999;
+            bool limit = vehicle && limitTexture != null;
             float needsWidth = count * CardWidth + 22;
-            float vehicleWidth = 156 + (fuel ? 108 : 0) + (limit ? 90 : 0);
+            float vehicleWidth = 156 + (fuel ? 108 : 0);
             float territoryHeight = rows == 0 ? 0 : 16 + rows * RowHeight;
             float right = width * (1 - (1 - sample.SafeZone) / 2 - settings.RightMargin);
             float top = height * ((1 - sample.SafeZone) / 2 + settings.TopOffset);
             float bottom = height * (1 - (1 - sample.SafeZone) / 2 - settings.BottomMargin);
-            float stackHeight = (count > 0 ? PanelHeight + 9 : 0) + territoryHeight + (vehicle ? PanelHeight + 12 : 0);
             float scale = Math.Min(width / 1920f, height / 1080f) * settings.Scale;
-            scale = Math.Min(scale, Math.Min((bottom - top) / Math.Max(1, stackHeight),
-                width * .48f / Math.Max(needsWidth, Math.Max(TerritoryWidth, vehicleWidth))));
+            scale = Math.Min(scale, width * .48f / Math.Max(needsWidth, TerritoryWidth));
+            float vehicleScale = scale;
+            float upperHeight = (count > 0 ? PanelHeight + 9 : 0) + territoryHeight;
+            float availableHeight = bottom - top - (vehicle ? (PanelHeight + 12) * vehicleScale : 0);
+            scale = Math.Min(scale, availableHeight / Math.Max(1, upperHeight));
             if (scale <= 0)
                 return 0;
 
@@ -196,12 +234,18 @@ namespace ElectroHud
                 float left = right - TerritoryWidth * scale;
                 DrawPanel(frame, left, top, TerritoryWidth, scale, territoryHeight);
                 int index = 0;
-                foreach (var row in territory)
-                    if (row != null)
-                        Sprite(frame, row, left, top, scale, 16, 8 + index++ * RowHeight, 373, 26);
+                for (int i = 0; i < territory.Length; i++)
+                {
+                    if (territory[i] == null)
+                        continue;
+                    Sprite(frame, territory[i], left, top, scale, 16, 8 + index++ * RowHeight, 373, 26);
+                    if (fullTerritoryRow[i])
+                        mask |= TerritoryBits[i];
+                }
             }
             if (vehicle)
             {
+                scale = vehicleScale;
                 float left = right - vehicleWidth * scale;
                 float y = bottom - PanelHeight * scale;
                 DrawPanel(frame, left, y, vehicleWidth, scale);
@@ -219,15 +263,18 @@ namespace ElectroHud
                     Rect(frame, speedX, y, scale, 77 + point.X * 1.85f, 56 + point.Y * 1.85f,
                         2.5f, 2.5f, i < 14 ? magenta : cyan);
                 }
-                DrawNumber(frame, sample.Speed, speedX, y, scale, 78, 21, 1);
-                Sprite(frame, speedUnit, speedX, y, scale, 48, 71, 60, 18);
-                Rect(frame, speedX, y, scale, 36, 96, 42, 2, cyan);
-                Rect(frame, speedX, y, scale, 78, 96, 42, 2, magenta);
+                DrawNumber(frame, sample.Speed, speedX, y, scale, 78, limit ? 14 : 21, 1);
+                mask |= 256;
+                Sprite(frame, speedUnit, speedX, y, scale, 48, limit ? 58 : 71, 60, 18);
                 if (limit)
                 {
-                    float limitX = speedX + 156 * scale;
-                    Sprite(frame, limitLabel, limitX, y, scale, 7, 26, 66, 18);
-                    DrawNumber(frame, sample.SpeedLimit, limitX, y, scale, 40, 44, .72f);
+                    Sprite(frame, limitTexture, speedX, y, scale, 4, 82, 148, 17);
+                    mask |= 2048;
+                }
+                else
+                {
+                    Rect(frame, speedX, y, scale, 36, 96, 42, 2, cyan);
+                    Rect(frame, speedX, y, scale, 78, 96, 42, 2, magenta);
                 }
             }
             return mask;
@@ -349,6 +396,12 @@ namespace ElectroHud
 
         private Texture Text(string name, string text, Color color, float fontSize, int width, int height, bool bold = false, bool left = false)
         {
+            return Text(name, text, color, fontSize, width, height, bold, left, out _);
+        }
+
+        private Texture Text(string name, string text, Color color, float fontSize, int width, int height,
+            bool bold, bool left, out bool whole)
+        {
             string path = Path.Combine(cache, name + ".png");
             using (var image = new Bitmap(width, height, PixelFormat.Format32bppArgb))
             using (var graphics = System.Drawing.Graphics.FromImage(image))
@@ -357,6 +410,7 @@ namespace ElectroHud
             using (var format = new StringFormat { Alignment = left ? StringAlignment.Near : StringAlignment.Center, LineAlignment = StringAlignment.Center, FormatFlags = StringFormatFlags.NoWrap, Trimming = StringTrimming.EllipsisCharacter })
             {
                 graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+                whole = graphics.MeasureString(text, font).Width <= width;
                 graphics.DrawString(text, font, brush, new RectangleF(0, 0, width, height), format);
                 image.Save(path, ImageFormat.Png);
             }

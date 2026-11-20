@@ -34,17 +34,17 @@ namespace ElectroHud
             public uint Handle;
             public float Hunger, Thirst, Sleep, Fuel, Limit;
             public int Wanted;
-            public string Region, Street, Agency, Gang;
+            public string Region, Street, Agency, Gang, Pursuit, Recognition;
         }
 
-        private const int Magic = 0x45485232;
-        private const int Size = 840;
+        private const int Magic = 0x45485233;
+        private const int Size = 1232;
 
         public LosSantosRedReader(Settings settings)
         {
             this.settings = settings;
             using (var process = Process.GetCurrentProcess())
-                channel = @"Local\ElectroHud.Lsr.v2." + process.Id;
+                channel = @"Local\ElectroHud.Lsr.v3." + process.Id;
             Report("Estresse", "oculto: o LS RED de referência não fornece esta estatística");
         }
 
@@ -181,18 +181,28 @@ namespace ElectroHud
 
             int flags = snapshot.Flags;
             uint tracked = snapshot.Handle;
-            Report("Ponte", "snapshot v2 recebido");
+            Report("Ponte", "snapshot v3 recebido");
             Report("Detecção LS RED", "detectado pelo publicador IPC");
             Report("Instância LS RED", "Player ativo confirmado pelo publicador");
             sample.Menu |= (flags & 1) != 0;
             sample.Searching = (flags & 64) != 0;
             sample.Wanted = snapshot.Wanted;
+            sample.BridgeStamp = snapshot.Timestamp;
+            sample.Pursuit = snapshot.Pursuit;
             sample.Region = snapshot.Region;
             sample.Street = snapshot.Street;
             sample.Agency = snapshot.Agency;
             sample.Gang = snapshot.Gang;
-            if (sample.RoadVehicle && handle != 0 && handle == tracked && snapshot.Limit > 0 && !float.IsInfinity(snapshot.Limit))
+            bool sameVehicle = handle != 0 && handle == tracked;
+            if (sameVehicle)
+                sample.Recognition = snapshot.Recognition;
+            if (sameVehicle && (flags & 128) != 0 && snapshot.Limit > 0 && !float.IsInfinity(snapshot.Limit))
                 sample.SpeedLimit = snapshot.Limit;
+            Report("Limite de velocidade", !sameVehicle ? "sem veículo rastreado correspondente"
+                : (flags & 256) == 0 ? "tipo de veículo incompatível"
+                : (flags & 512) != 0 ? "rua sem cadastro (valor padrão do LS RED)"
+                : float.IsNaN(sample.SpeedLimit) ? "limite cadastrado indisponível"
+                : "limite confirmado pelo cadastro de ruas do LS RED");
             sample.Hunger = BridgeNeed("Fome", settings.Hunger, snapshot.Hunger, flags, 8, "Hunger");
             sample.Thirst = BridgeNeed("Sede", settings.Thirst, snapshot.Thirst, flags, 16, "Thirst");
             sample.Sleep = BridgeNeed("Sono", settings.Sleep, snapshot.Sleep, flags, 32, "Sleep");
@@ -239,7 +249,9 @@ namespace ElectroHud
                     Region = ReadText(64),
                     Street = ReadText(256),
                     Agency = ReadText(448),
-                    Gang = ReadText(640)
+                    Gang = ReadText(640),
+                    Pursuit = ReadText(840),
+                    Recognition = ReadText(1032)
                 } : default(BridgeSnapshot);
             }
             finally
@@ -258,7 +270,7 @@ namespace ElectroHud
             return System.Text.Encoding.UTF8.GetString(textBuffer, 0, length < 0 ? textBuffer.Length : length);
         }
 
-        public void PublishVisibility(int mask, uint vehicleHandle)
+        public void PublishVisibility(int mask, uint vehicleHandle, long snapshot = 0)
         {
             if (view == null)
                 return;
@@ -271,6 +283,7 @@ namespace ElectroHud
                     return;
                 view.Write(832, mask);
                 view.Write(836, vehicleHandle);
+                view.Write(1224, snapshot);
                 view.Write(48, mask == 0 ? 0L : Stopwatch.GetTimestamp());
             }
             catch (Exception e) when (e is IOException || e is UnauthorizedAccessException || e is ObjectDisposedException)

@@ -14,41 +14,46 @@ Referência examinada: `jholleboy/lossantosred-ptbr`, branch `feature/pt-br-loca
 
 `ModController.ModDataFileManager.Settings.SettingsManager` fornece as opções de necessidades e combustível. O adaptador usa somente reflexão de leitura em membros públicos. Revalida o estado do controlador a cada amostra e guarda os metadados de reflexão, sem reter objetos de gameplay entre amostras. Antes de o LS RED iniciar ou após ele ser descarregado, o painel continua com os dados nativos do GTA V. A leitura opcional exige que a assembly e a instância ativa sejam visíveis no mesmo domínio gerenciado. A descoberta e o ciclo de carregamento devem ser validados na versão de RPH instalada.
 
-## Território e veículo
+## Central territorial e policial
 
-| Informação | Fonte |
+| Informação | Fonte na RC2 |
 | --- | --- |
-| Região | `Player.CurrentLocation.CurrentZone.DisplayName` |
-| Rua | `Player.CurrentLocation.CurrentStreet.ProperStreetName` |
-| Procurado | `Player.WantedLevel` e `Player.IsInSearchMode`. Na ausência do LS RED, `GET_PLAYER_WANTED_LEVEL` fornece o nível. O nível do LS RED pode superar cinco. |
-| Polícia | `CurrentZone.AssignedLEAgency.ShortName`, quando disponível |
-| Gangue | `CurrentZone.AssignedGang.ShortName`, quando houver. Trata-se da gangue atribuída à zona pelo LS RED. |
-| Velocidade | `Vehicle.Speed` do SDK RPH em m/s, multiplicada por 3,6 |
-| Limite | `Street.SpeedLimitKMH` na ponte V3. Requer veículo rodoviário correspondente e uma rua presente no cadastro do LS RED. A rua sintética de 60 mph criada pelo jogo/mod quando falta cadastro fica de fora. |
+| Região, rua, polícia e gangue | `LowerRightDisplay.GetZoneDisplay()` e `GetStreetDisplay(true)` preservam os detalhes exibidos pela HUD original, incluindo endereço, cruzamento, jurisdição adicional e reputação. As atribuições `CurrentZone.AssignedLEAgency` e `AssignedGang` completam o painel quando disponíveis. |
+| Nível e busca | `Player.WantedLevel` e `Player.IsInSearchMode`. Sem LS RED, o nível vem de `GET_PLAYER_WANTED_LEVEL`. |
+| Perseguição | Mesmas condições do `LowerRightDisplay` para alerta, tentativa de localização, fogo liberado, força letal, invasão da posição e perseguição ativa. Preserva a contagem de policiais quando configurada. |
+| Reconhecimento | `CurrentVehicle.HasBeenSeenByPoliceDuringWanted`, com as mesmas prioridades da HUD original para veículo roubado e placa fictícia. `hud.vehicleKnownToPolice` tem fallback em inglês e tradução no catálogo central da RC2. |
 
-O fiber do ElectroHud amostra a cada 50 ms. Texturas das linhas de território são atualizadas ao mudar o texto. O callback `RawFrameRender` desenha usando somente amostras e recursos preparados. Os painéis usam a resolução e a área segura do GTA V, com margens ajustáveis para HUDs de terceiros.
+São ocultados apenas os textos completos confirmados pelo ElectroHud. Textos muito longos mantêm a versão original se o painel os truncar. Permanecem na HUD original as mensagens de investigação, BOLO/APB, alertas de crimes, placa procurada, veículo roubado, placa fictícia, motor desligado e demais avisos que a central ainda não representa. Scanner, menus, notificações e estrelas continuam funcionando de forma independente.
 
-## Ponte V3 para a RC2
+## Limite de velocidade
 
-Use uma **cópia limpa de `ba4115b`** da RC2 PT-BR. O [patch V3](integration/LosSantosRED-ba4115b-v3.patch) já inclui a publicação de necessidades e combustível. A V3 espera o protocolo v2, portanto use o patch V3 no lugar do patch V1. Na raiz da cópia da RC2:
+`LowerRightDisplay.GetVehicleStatusDisplay()` formata a velocidade atual e `CurrentStreet.SpeedLimitMPH` entre parênteses, sem verificar a origem. Em `LocationData.UpdateStreets()`, a RC2 procura a rua pelo nome fornecido pelo jogo. Se não encontrar, cria `new Street(CurrentStreetName, 60f, "MPH")`. Alguns registros reais da RC2, como Great Ocean Hwy, também têm 60 mph. Só o número da captura é insuficiente para saber de qual caso se trata.
+
+A V3 já exigia que a rua fosse a própria entrada do cadastro. Também exigia o mesmo handle de veículo, uma classe nativa rodoviária e um snapshot válido. Por isso a HUD original podia mostrar 60 mph mesmo com o limite oculto no ElectroHud. A V4 usa a classificação de automóvel/motocicleta da própria RC2 e registra o motivo da ausência com `Diagnostics`. Se a entrada estiver confirmada, o valor original em mph é multiplicado por **1,609344**. Um limite cadastrado de 60 mph resulta em `Limite: 97 km/h`. O valor padrão continua restrito à HUD original quando ela está configurada para mostrá-lo.
+
+## Aplicar a ponte V4
+
+Use uma **cópia limpa de `ba4115b`** da RC2 PT-BR. A V4 incorpora a V3 e deve ser aplicada diretamente à RC2 limpa. Na raiz da cópia:
 
 ```powershell
-$patch = 'C:\src\ElectroHud\integration\LosSantosRED-ba4115b-v3.patch'
+$patch = 'C:\src\ElectroHud\integration\LosSantosRED-ba4115b-v4.patch'
 git apply --check $patch
 if ($LASTEXITCODE -ne 0) { throw 'A cópia do LS RED deve estar limpa no commit ba4115b.' }
 git apply $patch
 ```
 
-Compile a cópia pelo procedimento da RC2 e instale a DLL resultante no ambiente de teste. O original permanece disponível ao recompilar a RC2 limpa. O publicador atualiza o canal `Local\ElectroHud.Lsr.v2.<PID>` a cada 250 ms. Um mutex sem espera protege o snapshot e a confirmação de visibilidade. O leitor descarta snapshots com mais de dois segundos.
+Compile a cópia pelo procedimento da RC2 e instale a DLL e o catálogo atualizado no ambiente de teste. O ElectroHud V4 usa a ponte V4 ou a reflexão pública quando disponível.
 
-A confirmação vence em até 750 ms. Enquanto for válida, `TopRightMenu` omite individualmente fome, sede e sono que o ElectroHud desenhou. `LowerRightDisplay` omite somente o combustível do mesmo veículo. Saúde e colete nativos, dinheiro, estrelas, painel territorial original, busca, identificação do veículo, avisos policiais, efeitos de vida, notificações e menus continuam sob responsabilidade de suas interfaces originais. Desative `SuppressReplacedLsrIndicators` para permitir a exibição simultânea dos indicadores originais. F9, pausa, descarga ou perda do canal fazem os indicadores retornarem após a confirmação ser zerada ou vencer.
+## Protocolo da ponte V4
+
+Canal `Local\ElectroHud.Lsr.v3.<PID>`, 1232 bytes, protegido por mutex sem espera. O produtor escreve a cada 250 ms. O consumidor rejeita snapshots com mais de dois segundos. A confirmação referencia um snapshot desenhado e vence em 750 ms. Texto e veículo são conferidos individualmente. F9, descarga, perda do canal e `SuppressReplacedLsrIndicators=false` devolvem a exibição à RC2 após zerar a confirmação ou expirar o prazo.
 
 | Offset | Campo |
 | --- | --- |
-| 0, 4, 8 | Magic `0x45485232`, handle rastreado, timestamp monotônico |
+| 0, 4, 8 | Magic `0x45485233`, handle rastreado, timestamp do snapshot |
 | 16, 20, 24, 28 | Percentuais de fome, sede, sono e combustível |
-| 32, 36, 40 | Flags, nível de procurado, limite em km/h |
-| 64, 256, 448, 640 | Região, rua, polícia e gangue em UTF-8, 192 bytes cada |
-| 48, 832, 836 | Timestamp da confirmação, máscara dos indicadores desenhados, handle do consumidor |
+| 32, 36, 40 | Flags do produtor, nível de procurado, limite confirmado em km/h |
+| 64, 256, 448, 640, 840, 1032 | Região, rua, polícia, gangue, perseguição e reconhecimento. UTF-8, 192 bytes por campo. |
+| 48, 832, 836, 1224 | Timestamp da confirmação, máscara do consumidor, handle e timestamp do snapshot confirmado |
 
-As flags do produtor usam 1 para menu, 2 para sistema de combustível, 4 para veículo compatível, 8/16/32 para cada necessidade habilitada e 64 para modo de busca. A máscara do consumidor usa 4/8/16/32 para combustível/fome/sede/sono.
+Flags do produtor: 1 menu, 2 combustível ativado, 4 veículo que usa combustível, 8/16/32 fome/sede/sono ativados, 64 modo de busca, 128 limite confirmado, 256 automóvel/motocicleta rastreado, 512 rua sem cadastro. Máscara do consumidor: 4 combustível, 8/16/32 fome/sede/sono, 64 região com dados territoriais, 128 rua, 256 velocidade, 512 estado de perseguição, 1024 reconhecimento, 2048 limite.

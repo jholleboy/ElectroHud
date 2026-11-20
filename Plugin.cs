@@ -74,8 +74,6 @@ namespace ElectroHud
                                 {
                                     sample.VehicleHandle = (uint)vehicle.Handle;
                                     sample.Speed = vehicle.Speed * 3.6f;
-                                    int kind = NativeFunction.Natives.GET_VEHICLE_CLASS<int>(sample.VehicleHandle);
-                                    sample.RoadVehicle = kind >= 0 && kind <= 12 || kind >= 17 && kind <= 20;
                                 }
                                 sample.Wanted = NativeFunction.Natives.GET_PLAYER_WANTED_LEVEL<int>(
                                     NativeFunction.Natives.PLAYER_ID<int>());
@@ -86,6 +84,7 @@ namespace ElectroHud
                                 sample.Visible = false;
                         }
                         int mask;
+                        long acknowledged;
                         lock (Sync)
                         {
                             if (sample.Visible && settings.ShowTerritory)
@@ -97,10 +96,13 @@ namespace ElectroHud
                             if (float.IsNaN(sample.Thirst)) mask &= ~16;
                             if (float.IsNaN(sample.Sleep)) mask &= ~32;
                             if (float.IsNaN(sample.Fuel) || latest.VehicleHandle != sample.VehicleHandle) mask &= ~4;
+                            if (latest.VehicleHandle != sample.VehicleHandle) mask &= ~(256 | 1024 | 2048);
+                            acknowledged = latest.BridgeStamp;
+                            if (sample.BridgeStamp == 0 || acknowledged == 0) mask = 0;
                             drawnMask = 0;
                             latest = sample;
                         }
-                        lsr.PublishVisibility(mask, sample.VehicleHandle);
+                        lsr.PublishVisibility(mask, sample.VehicleHandle, acknowledged);
                         GameFiber.Sleep(50);
                     }
                 }
