@@ -14,6 +14,7 @@ namespace ElectroHud
         private const int Segments = 40;
         private const float CardWidth = 108;
         private const float PanelHeight = 111;
+        private const float NeedsHeight = 99;
         private static readonly string[] Names = { "Saúde", "Fome", "Sede", "Sono", "Estresse", "Combustível", "Colete" };
         private static readonly string[] Icons = { "health", "hunger", "thirst", "sleep", "stress", "fuel", "armor" };
         private static readonly string[] Defaults = { "#50FF92", "#FFA94F", "#36E6FF", "#AC7DFF", "#FF68BA", "#5488FF", "#82D1FF" };
@@ -33,6 +34,7 @@ namespace ElectroHud
         private readonly Texture[] warningDigits = new Texture[10];
         private Texture speedUnit;
         private readonly bool[] fullTerritoryRow = new bool[7];
+        private static readonly int[] TerritoryOrder = { 3, 4, 2, 0, 1, 5, 6 };
         private static readonly int[] TerritoryBits = { 64, 128, 0, 512, 1024, 0, 0 };
         private static readonly System.Text.RegularExpressions.Regex GtaFormatting =
             new System.Text.RegularExpressions.Regex(@"~[a-zA-Z0-9_]+~");
@@ -86,7 +88,7 @@ namespace ElectroHud
                         Glow = WithOpacity(color, .16f),
                         Critical = Math.Min(100, Math.Max(0, option.CriticalPercent)),
                         Icon = LoadIcon(directory, Icons[i]),
-                        Label = Text(Icons[i] + "-label", Names[i], WithOpacity(Color.White, .96f), 19, 184, 42),
+                        Label = i == (int)Indicator.Fuel ? Text(Icons[i] + "-label", Names[i], WithOpacity(Color.White, .96f), 19, 184, 42) : null,
                         Glyphs = new Texture[11]
                     };
                     for (int j = 0; j < gauge.Glyphs.Length; ++j)
@@ -266,7 +268,7 @@ namespace ElectroHud
             // Match the V4 vehicle anchor and sizing independently of the territory settings.
             scale = Math.Min(scale, width * .48f / Math.Max(needsWidth, 405));
             float vehicleScale = scale;
-            float needsHeight = count > 0 ? (PanelHeight + 9) * scale : 0;
+            float needsHeight = count > 0 ? (NeedsHeight + 9) * scale : 0;
             float availableHeight = bottom - top - needsHeight - (vehicle ? (PanelHeight + 12) * vehicleScale : 0);
             float territoryScale = Math.Min(scale / settings.Scale * settings.TerritoryScale,
                 Math.Min(availableHeight / Math.Max(1, territoryHeight), width * .48f / TerritoryWidth));
@@ -275,7 +277,7 @@ namespace ElectroHud
             if (count > 0)
             {
                 float left = right - needsWidth * scale;
-                DrawPanel(frame, left, top, needsWidth, scale);
+                DrawPanel(frame, left, top, needsWidth, scale, NeedsHeight);
                 int index = 0;
                 foreach (int slot in Order)
                 {
@@ -285,14 +287,14 @@ namespace ElectroHud
                     if (slot >= 1 && slot <= 3)
                         mask |= 1 << (slot + 2);
                 }
-                top += (PanelHeight + 9) * scale;
+                top += (NeedsHeight + 9) * scale;
             }
             if (territoryHeight > 0 && territoryScale >= .35f)
             {
                 float left = right - TerritoryWidth * territoryScale;
                 DrawPanel(frame, left, top, TerritoryWidth, territoryScale, territoryHeight);
                 float y = 8;
-                for (int i = 0; i < territory.Length; i++)
+                foreach (int i in TerritoryOrder)
                 {
                     if (territory[i] == null)
                         continue;
@@ -399,7 +401,8 @@ namespace ElectroHud
                 Rect(f, x, y, scale, -19, 72, 38, 1, Alpha(gauge.Color, pulse));
             }
             Sprite(f, gauge.Icon, x, y, scale, -16, 24, 32, 32);
-            Sprite(f, gauge.Label, x, y, scale, -46, 92, 92, 21);
+            if (gauge.Label != null)
+                Sprite(f, gauge.Label, x, y, scale, -46, 92, 92, 21);
 
             int percent = (int)Math.Round(gauge.Display);
             int digits = percent >= 100 ? 3 : (percent >= 10 ? 2 : 1);

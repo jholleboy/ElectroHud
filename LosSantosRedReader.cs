@@ -26,6 +26,8 @@ namespace ElectroHud
         private Mutex mutex;
         private long nextBridgeProbe;
         private BridgeSnapshot cached;
+        private string bridgeState = "aguardando o primeiro snapshot";
+        private readonly Dictionary<string, long> textLogTimes = new Dictionary<string, long>();
 
         private struct BridgeSnapshot
         {
@@ -37,14 +39,14 @@ namespace ElectroHud
             public string Region, Street, Agency, Gang, Pursuit, VehicleContext;
         }
 
-        private const int Magic = 0x45485234;
+        private const int Magic = 0x45485235;
         private const int Size = 8192;
 
         public LosSantosRedReader(Settings settings)
         {
             this.settings = settings;
             using (var process = Process.GetCurrentProcess())
-                channel = @"Local\ElectroHud.Lsr.v4." + process.Id;
+                channel = @"Local\ElectroHud.Lsr.v5." + process.Id;
             Report("Estresse", "oculto: o LS RED de referência não fornece esta estatística");
         }
 
@@ -175,13 +177,13 @@ namespace ElectroHud
             long age = Stopwatch.GetTimestamp() - snapshot.Timestamp;
             if (snapshot.Timestamp <= 0 || age < 0 || age > Stopwatch.Frequency * 2)
             {
-                Report("Ponte", "snapshot vencido ou protocolo incompatível");
+                Report("Ponte", snapshot.Timestamp <= 0 ? bridgeState : "snapshot vencido durante operação ou saída sem sinal de encerramento");
                 return false;
             }
 
             int flags = snapshot.Flags;
             uint tracked = snapshot.Handle;
-            Report("Ponte", "snapshot v4 recebido");
+            Report("Ponte", "snapshot v5 recebido");
             Report("Detecção LS RED", "detectado pelo publicador IPC");
             Report("Instância LS RED", "Player ativo confirmado pelo publicador");
             sample.Menu |= (flags & 1) != 0;
@@ -193,17 +195,21 @@ namespace ElectroHud
             sample.Street = snapshot.Street;
             sample.Agency = snapshot.Agency;
             sample.Gang = snapshot.Gang;
+            ReportText("Zona recebida", snapshot.Region);
+            ReportText("Rua recebida", snapshot.Street);
+            ReportText("Estado recebido", snapshot.Pursuit);
+            ReportText("Veículo recebido", snapshot.VehicleContext);
             bool sameVehicle = handle != 0 && handle == tracked;
             if (sameVehicle)
             {
                 sample.VehicleContext = snapshot.VehicleContext;
                 sample.FelonySpeeding = (flags & 1024) != 0;
             }
-            if (sameVehicle && (flags & 128) != 0 && snapshot.Limit > 0 && !float.IsInfinity(snapshot.Limit))
+            if (sameVehicle && (flags & (128 | 512)) != 0 && snapshot.Limit > 0 && !float.IsInfinity(snapshot.Limit))
                 sample.SpeedLimit = snapshot.Limit;
             Report("Limite de velocidade", !sameVehicle ? "sem veículo rastreado correspondente"
                 : (flags & 256) == 0 ? "tipo de veículo incompatível"
-                : (flags & 512) != 0 ? "rua sem cadastro (valor padrão do LS RED)"
+                : (flags & 512) != 0 ? "valor padrão fornecido pelo LS RED"
                 : float.IsNaN(sample.SpeedLimit) ? "limite cadastrado indisponível"
                 : "limite confirmado pelo cadastro de ruas do LS RED");
             sample.Hunger = BridgeNeed("Fome", settings.Hunger, snapshot.Hunger, flags, 8, "Hunger");
@@ -232,15 +238,27 @@ namespace ElectroHud
                 {
                     held = true;
                     cached = default(BridgeSnapshot);
-                    return; // A previous writer may have stopped mid-write.
+                    bridgeState = "escrita interrompida no canal";
+                    return;
                 }
                 if (!held)
                     return;
                 long stamp = view.ReadInt64(8);
-                if (cached.Timestamp == stamp) return;
+                if (stamp > 0 && cached.Timestamp == stamp) return;
                 cached = default(BridgeSnapshot);
-                if (view.ReadInt32(0) != Magic || stamp <= 0)
+                int magic = view.ReadInt32(0);
+                if (stamp <= 0)
+                {
+                    bridgeState = magic == Magic && (view.ReadInt32(32) & 2048) != 0
+                        ? "publicador RC2 encerrado normalmente" : "aguardando snapshot completo";
                     return;
+                }
+                if (magic != Magic)
+                {
+                    bridgeState = "versão de protocolo incompatível no canal";
+                    return;
+                }
+                bridgeState = "snapshot malformado";
                 var next = new BridgeSnapshot
                 {
                     Timestamp = stamp,
@@ -302,7 +320,7 @@ namespace ElectroHud
                 catch (AbandonedMutexException) { held = true; mask = 0; }
                 if (!held)
                     return;
-                view.Write(8184, mask);
+                view.Write(8184, mask | (settings.Diagnostics ? 1 << 30 : 0));
                 view.Write(8188, vehicleHandle);
                 view.Write(56, snapshot);
                 view.Write(48, mask == 0 ? 0L : Stopwatch.GetTimestamp());
@@ -338,6 +356,30 @@ namespace ElectroHud
         {
             Report(name, option == null || !option.Enabled ? "oculto pela configuração do ElectroHud"
                 : float.IsNaN(value) ? "oculto: " + missing : "localizado em " + source);
+        }
+
+        public void ReportDrawn(int mask, Sample sample)
+        {
+            if (!settings.Diagnostics)
+                return;
+            Report("Confirmação enviada", $"máscara {mask}");
+            ReportText("Zona desenhada", (mask & 64) != 0 ? sample.Region : null);
+            ReportText("Rua desenhada", (mask & 128) != 0 ? sample.Street : null);
+            ReportText("Estado desenhado", (mask & 512) != 0 ? sample.Pursuit : null);
+            ReportText("Veículo desenhado", (mask & 1024) != 0 ? sample.VehicleContext : null);
+        }
+
+        private void ReportText(string category, string value)
+        {
+            if (!settings.Diagnostics)
+                return;
+            string message = string.IsNullOrWhiteSpace(value) ? "nenhum texto confirmado" : value;
+            long now = Stopwatch.GetTimestamp();
+            if ((lastStatus.TryGetValue(category, out string prior) && prior == message)
+                || (textLogTimes.TryGetValue(category, out long last) && now - last < Stopwatch.Frequency * 3))
+                return;
+            textLogTimes[category] = now;
+            Report(category, message);
         }
 
         private void Report(string category, string message)

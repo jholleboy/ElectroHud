@@ -15,6 +15,7 @@ namespace ElectroHud
         private static Sample latest;
         private static long lastDraw;
         private static int drawnMask;
+        private static Sample drawnSample;
         private static volatile bool stopping;
 
         public static void Main()
@@ -87,7 +88,7 @@ namespace ElectroHud
                         long acknowledged;
                         lock (Sync)
                         {
-                            if (sample.Visible && settings.ShowTerritory)
+                            if (sample.Visible)
                                 renderer.PrepareTerritory(sample);
                             var age = System.Diagnostics.Stopwatch.GetTimestamp() - lastDraw;
                             mask = sample.Visible && settings.SuppressReplacedLsrIndicators
@@ -95,11 +96,16 @@ namespace ElectroHud
                             if (float.IsNaN(sample.Hunger)) mask &= ~8;
                             if (float.IsNaN(sample.Thirst)) mask &= ~16;
                             if (float.IsNaN(sample.Sleep)) mask &= ~32;
-                            if (float.IsNaN(sample.Fuel) || latest.VehicleHandle != sample.VehicleHandle) mask &= ~4;
-                            if (latest.VehicleHandle != sample.VehicleHandle) mask &= ~(256 | 1024 | 2048);
-                            acknowledged = latest.BridgeStamp;
+                            if (float.IsNaN(sample.Fuel) || drawnSample.VehicleHandle != sample.VehicleHandle) mask &= ~4;
+                            if (drawnSample.VehicleHandle != sample.VehicleHandle) mask &= ~(256 | 1024 | 2048);
+                            acknowledged = drawnSample.BridgeStamp;
                             if (sample.BridgeStamp == 0 || acknowledged == 0) mask = 0;
-                            drawnMask = 0;
+                            lsr.ReportDrawn(mask, drawnSample);
+                            if (!sample.Visible || sample.BridgeStamp == 0)
+                            {
+                                drawnMask = 0;
+                                drawnSample = default(Sample);
+                            }
                             latest = sample;
                         }
                         lsr.PublishVisibility(mask, sample.VehicleHandle, acknowledged);
@@ -142,6 +148,7 @@ namespace ElectroHud
                     if (!stopping && latest.Visible)
                     {
                         drawnMask = renderer?.Draw(e, latest) ?? 0;
+                        drawnSample = latest;
                         lastDraw = System.Diagnostics.Stopwatch.GetTimestamp();
                     }
                 }
