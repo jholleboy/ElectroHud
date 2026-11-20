@@ -1,0 +1,2 @@
+# Preserve Git patch context and LF on Windows.
+integration/*.patch -text whitespace=-blank-at-eol

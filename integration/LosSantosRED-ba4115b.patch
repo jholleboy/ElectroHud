@@ -1,14 +1,14 @@
 diff --git a/Los Santos RED/ModController.cs b/Los Santos RED/ModController.cs
-index 020d968..5d4e5db 100644
---- a/Los Santos RED/ModController.cs
-+++ b/Los Santos RED/ModController.cs
+index 020d96832cdda2e97ca2a4e971d292bb22ef0454..5d4e5dba57c449fb2f6749944f3a57efaf1c5b60 100644
+--- a/Los Santos RED/ModController.cs	
++++ b/Los Santos RED/ModController.cs	
 @@ -34,6 +34,7 @@ namespace LosSantosRED.lsr
          private Mod.Crafting Crafting;
          public ModDataFileManager ModDataFileManager { get; private set; }
          public Mod.Player Player { get; private set; }
 +        private readonly ElectroHudSnapshotPublisher electroHud = new ElectroHudSnapshotPublisher();
          private WeatherManager WeatherManager;
-
+ 
          public ModController()
 @@ -182,6 +183,7 @@ namespace LosSantosRED.lsr
          public void Dispose()
