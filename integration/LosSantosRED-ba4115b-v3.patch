@@ -1,0 +1,251 @@
+diff --git a/Los Santos RED/ModController.cs b/Los Santos RED/ModController.cs
+index 020d96832cdda2e97ca2a4e971d292bb22ef0454..4453adddb4b00045b8ec66b7ce65ee1e9d88137e 100644
+--- a/Los Santos RED/ModController.cs	
++++ b/Los Santos RED/ModController.cs	
+@@ -34,6 +34,9 @@ namespace LosSantosRED.lsr
+         private Mod.Crafting Crafting;
+         public ModDataFileManager ModDataFileManager { get; private set; }
+         public Mod.Player Player { get; private set; }
++        private readonly ElectroHudSnapshotPublisher electroHud = new ElectroHudSnapshotPublisher();
++        internal int ElectroHudNeedsMask => electroHud.VisibleMask & 56;
++        internal bool ElectroHudShowsFuel(uint handle) => electroHud.IsFuelVisible(handle);
+         private WeatherManager WeatherManager;
+ 
+         public ModController()
+@@ -182,6 +185,7 @@ namespace LosSantosRED.lsr
+         public void Dispose()
+         {
+             IsRunning = false;
++            electroHud.Dispose();
+             Player.Dispose();
+             World.Dispose();
+             PedSwap.Dispose();
+@@ -210,6 +214,7 @@ namespace LosSantosRED.lsr
+                 new ModTaskGroup("RG1:Player", new List<ModTask>()
+                 {
+                      new ModTask(100, "Player.Update", Player.Update, 0),//1
++                     new ModTask(250, "ElectroHud.Snapshot", () => electroHud.Publish(this), 0),
+                      new ModTask(250, "UI.UpdateData", UI.CacheData, 1),//500
+                 }),
+                 new ModTaskGroup("RG2:Player Gen", new List<ModTask>()
+@@ -547,4 +552,158 @@ namespace LosSantosRED.lsr
+             World.SpawnErrors.Add(spawnError);
+         }
+     }
++
++    // Optional snapshot producer with expiring display acknowledgements.
++    internal sealed class ElectroHudSnapshotPublisher : IDisposable
++    {
++        private const int Size = 840;
++        private const int Magic = 0x45485232;
++        private System.IO.MemoryMappedFiles.MemoryMappedFile map;
++        private System.IO.MemoryMappedFiles.MemoryMappedViewAccessor view;
++        private System.Threading.Mutex mutex;
++        private bool disabled;
++        private long visibleStamp;
++        private int visibleMask;
++        private uint visibleVehicle;
++        private readonly byte[] textBuffer = new byte[192];
++
++        public int VisibleMask
++        {
++            get
++            {
++                long age = Stopwatch.GetTimestamp() - visibleStamp;
++                return visibleStamp > 0 && age >= 0 && age <= Stopwatch.Frequency * 3 / 4 ? visibleMask : 0;
++            }
++        }
++
++        public bool IsFuelVisible(uint vehicleHandle) =>
++            vehicleHandle != 0 && visibleVehicle == vehicleHandle && (VisibleMask & 4) != 0;
++
++        public void Publish(ModController controller)
++        {
++            if (!controller.IsRunning || disabled)
++                return;
++            try
++            {
++                var player = controller.Player;
++                var manager = controller.ModDataFileManager?.Settings?.SettingsManager;
++                var ped = player?.Character;
++                if (player == null || manager == null || ped == null || !ped.Exists() || player.HumanState == null)
++                    return;
++
++                var needs = manager.NeedsSettings;
++                var vehicleOptions = manager.VehicleSettings;
++                int flags = controller.IsDisplayingAlertScreen || player.IsShowingFrontEndMenus
++                    || player.IsDisplayingCustomMenus ? 1 : 0;
++                if (vehicleOptions.UseCustomFuelSystem) flags |= 2;
++                if (needs.ApplyNeeds && needs.ApplyHunger) flags |= 8;
++                if (needs.ApplyNeeds && needs.ApplyThirst) flags |= 16;
++                if (needs.ApplyNeeds && needs.ApplySleep) flags |= 32;
++                float hunger = player.HumanState.Hunger?.CurrentValue ?? float.NaN;
++                float thirst = player.HumanState.Thirst?.CurrentValue ?? float.NaN;
++                float sleep = player.HumanState.Sleep?.CurrentValue ?? float.NaN;
++                uint handle = 0;
++                float fuel = float.NaN;
++                var tracked = player.CurrentVehicle;
++                var current = ped.IsInAnyVehicle(false) ? ped.CurrentVehicle : null;
++                if (current != null && current.Exists() && tracked?.Vehicle != null
++                    && tracked.Vehicle.Exists() && current.Handle == tracked.Vehicle.Handle)
++                {
++                    handle = (uint)current.Handle;
++                    if (tracked.RequiresFuel)
++                    {
++                        flags |= 4;
++                        if (vehicleOptions.UseCustomFuelSystem && vehicleOptions.CustomFuelSystemFuelMax > 0)
++                            fuel = current.FuelLevel * 100f / vehicleOptions.CustomFuelSystemFuelMax;
++                    }
++                }
++
++                var location = player.CurrentLocation;
++                var zone = location?.CurrentZone;
++                var street = location?.CurrentStreet;
++                float limit = float.NaN;
++                // LocationData also creates synthetic street records with a default 60 mph.
++                if (handle != 0 && !string.IsNullOrWhiteSpace(street?.Name)
++                    && ReferenceEquals(street, controller.ModDataFileManager.Streets.GetStreet(street.Name))
++                    && street.SpeedLimitKMH > 0 && !float.IsInfinity(street.SpeedLimitKMH))
++                    limit = street.SpeedLimitKMH;
++                if (player.IsInSearchMode) flags |= 64;
++
++                if (view == null)
++                {
++                    string channel;
++                    using (var process = Process.GetCurrentProcess())
++                        channel = @"Local\ElectroHud.Lsr.v2." + process.Id;
++                    mutex = new System.Threading.Mutex(false, channel + ".Lock");
++                    map = System.IO.MemoryMappedFiles.MemoryMappedFile.CreateOrOpen(channel, Size);
++                    view = map.CreateViewAccessor(0, Size);
++                }
++                bool held = false;
++                try
++                {
++                    try { held = mutex.WaitOne(0); }
++                    catch (System.Threading.AbandonedMutexException)
++                    {
++                        held = true;
++                        view.Write(48, 0L);
++                    }
++                    if (!held)
++                        return;
++                    visibleMask = view.ReadInt32(832);
++                    visibleVehicle = view.ReadUInt32(836);
++                    visibleStamp = view.ReadInt64(48);
++                    view.Write(8, 0L);
++                    view.Write(0, Magic);
++                    view.Write(4, handle);
++                    view.Write(16, hunger);
++                    view.Write(20, thirst);
++                    view.Write(24, sleep);
++                    view.Write(28, fuel);
++                    view.Write(32, flags);
++                    view.Write(36, player.WantedLevel);
++                    view.Write(40, limit);
++                    WriteText(64, zone?.DisplayName);
++                    WriteText(256, street?.ProperStreetName);
++                    WriteText(448, zone?.AssignedLEAgency?.ShortName);
++                    WriteText(640, zone?.AssignedGang?.ShortName);
++                    view.Write(8, Stopwatch.GetTimestamp());
++                }
++                finally
++                {
++                    if (held)
++                        mutex.ReleaseMutex();
++                }
++            }
++            catch (System.Threading.ThreadAbortException) { throw; }
++            catch (Exception ex)
++            {
++                disabled = true;
++                Dispose();
++                Game.LogTrivial("[ElectroHud bridge] Publicação desativada: " + ex.GetBaseException().Message);
++            }
++        }
++
++        private void WriteText(long offset, string text)
++        {
++            Array.Clear(textBuffer, 0, textBuffer.Length);
++            if (!string.IsNullOrEmpty(text))
++            {
++                char[] chars = text.ToCharArray();
++                System.Text.Encoding.UTF8.GetEncoder().Convert(chars, 0, chars.Length,
++                    textBuffer, 0, textBuffer.Length - 1, true, out _, out _, out _);
++            }
++            view.WriteArray(offset, textBuffer, 0, textBuffer.Length);
++        }
++
++        public void Dispose()
++        {
++            visibleStamp = 0;
++            view?.Dispose();
++            map?.Dispose();
++            mutex?.Dispose();
++            view = null;
++            map = null;
++            mutex = null;
++        }
++    }
+ }
+diff --git a/Los Santos RED/lsr/Player/HumanState/HumanState.cs b/Los Santos RED/lsr/Player/HumanState/HumanState.cs
+index ac671d1c4baeeda4ee1d8ec01424efcc9a6c7e36..e9f21acc487211b99bafc37310e5a4573d01f7be 100644
+--- a/Los Santos RED/lsr/Player/HumanState/HumanState.cs	
++++ b/Los Santos RED/lsr/Player/HumanState/HumanState.cs	
+@@ -105,13 +105,20 @@ public class HumanState
+     {
+         Reset();
+     }
+-    public string DisplayString()
++    public string DisplayString() => DisplayString(0);
++    public string DisplayString(int hidden)
+     {
+-        return string.Join(" ", HumanNeeds.OrderBy(x=>x.Name).Select(x => x.Display));
++        return string.Join(" ", HumanNeeds.Where(x => !IsReplacedNeed(x, hidden)).OrderBy(x=>x.Name).Select(x => x.Display));
+     }
+-    public string RecentlyChangedString()
++    private bool IsReplacedNeed(HumanNeed need, int hidden) =>
++        ((hidden & 8) != 0 && ReferenceEquals(need, Hunger))
++        || ((hidden & 16) != 0 && ReferenceEquals(need, Thirst))
++        || ((hidden & 32) != 0 && ReferenceEquals(need, Sleep));
++
++    public string RecentlyChangedString() => RecentlyChangedString(0);
++    public string RecentlyChangedString(int hidden)
+     {
+-        return string.Join(" ", HumanNeeds.Where(x=> x.RecentlyChanged).OrderBy(x => x.Name).Select(x => x.Display));
++        return string.Join(" ", HumanNeeds.Where(x => x.RecentlyChanged && !IsReplacedNeed(x, hidden)).OrderBy(x => x.Name).Select(x => x.Display));
+     }
+ }
+ 
+diff --git a/Los Santos RED/lsr/UI/LowerRightDisplay.cs b/Los Santos RED/lsr/UI/LowerRightDisplay.cs
+index 039999eb12963875ed07180be3c29becb5cfc1a9..ffef20f190ebdb0a5da6cf1ea7cfca3bb8caab81 100644
+--- a/Los Santos RED/lsr/UI/LowerRightDisplay.cs	
++++ b/Los Santos RED/lsr/UI/LowerRightDisplay.cs	
+@@ -481,7 +481,9 @@ public class LowerRightDisplay
+             {
+                 CurrentSpeedDisplay += $" ~y~(LI){UI.CurrentDefaultTextColor}";
+             }
+-            if (Settings.SettingsManager.VehicleSettings.UseCustomFuelSystem && DisplayablePlayer.CurrentVehicle.RequiresFuel)
++            if (Settings.SettingsManager.VehicleSettings.UseCustomFuelSystem && DisplayablePlayer.CurrentVehicle.RequiresFuel
++                && (DisplayablePlayer.CurrentVehicle.Vehicle == null || !DisplayablePlayer.CurrentVehicle.Vehicle.Exists()
++                    || EntryPoint.ModController?.ElectroHudShowsFuel((uint)DisplayablePlayer.CurrentVehicle.Vehicle.Handle) != true))
+             {
+                 CurrentSpeedDisplay += $"{UI.CurrentDefaultTextColor} " + DisplayablePlayer.CurrentVehicle.FuelTank.UIText;
+             }
+diff --git a/Los Santos RED/lsr/UI/TopRightMenu.cs b/Los Santos RED/lsr/UI/TopRightMenu.cs
+index f778eca2637a461e4170d416a9dfe5338b67646b..edd7c3f27e81ff55b7fe2920163824d3b3075935 100644
+--- a/Los Santos RED/lsr/UI/TopRightMenu.cs	
++++ b/Los Santos RED/lsr/UI/TopRightMenu.cs	
+@@ -210,11 +210,11 @@ public class TopRightMenu
+             string NeedsString = "";
+             if (UI.IsDrawingWheelMenu || DisplayablePlayer.IsSleeping || DisplayablePlayer.HealthManager.RecentlyDrainedHealth)
+             {
+-                NeedsString = DisplayablePlayer.HumanState.DisplayString();
++                NeedsString = DisplayablePlayer.HumanState.DisplayString(EntryPoint.ModController?.ElectroHudNeedsMask ?? 0);
+             }
+             else
+             {
+-                NeedsString = DisplayablePlayer.HumanState.RecentlyChangedString();
++                NeedsString = DisplayablePlayer.HumanState.RecentlyChangedString(EntryPoint.ModController?.ElectroHudNeedsMask ?? 0);
+             }
+             if (DisplayablePlayer.HealthManager.RecentlyDrainedHealth)
+             {

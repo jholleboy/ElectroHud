@@ -32,17 +32,19 @@ namespace ElectroHud
             public long Timestamp;
             public int Flags;
             public uint Handle;
-            public float Hunger, Thirst, Sleep, Fuel;
+            public float Hunger, Thirst, Sleep, Fuel, Limit;
+            public int Wanted;
+            public string Region, Street, Agency, Gang;
         }
 
-        private const int Magic = 0x45485231;
-        private const int Size = 40;
+        private const int Magic = 0x45485232;
+        private const int Size = 840;
 
         public LosSantosRedReader(Settings settings)
         {
             this.settings = settings;
             using (var process = Process.GetCurrentProcess())
-                channel = @"Local\ElectroHud.Lsr.v1." + process.Id;
+                channel = @"Local\ElectroHud.Lsr.v2." + process.Id;
             Report("Estresse", "oculto: o LS RED de referência não fornece esta estatística");
         }
 
@@ -88,6 +90,14 @@ namespace ElectroHud
                 Report("Instância LS RED", "Player encontrado por reflexão pública");
                 sample.Menu |= Flag(mod, "IsDisplayingAlertScreen")
                     || Flag(player, "IsShowingFrontEndMenus") || Flag(player, "IsDisplayingCustomMenus");
+                object location = Get(player, "CurrentLocation");
+                object zone = Get(location, "CurrentZone");
+                sample.Region = Get(zone, "DisplayName") as string;
+                sample.Street = Get(Get(location, "CurrentStreet"), "ProperStreetName") as string;
+                sample.Agency = Get(Get(zone, "AssignedLEAgency"), "ShortName") as string;
+                sample.Gang = Get(Get(zone, "AssignedGang"), "ShortName") as string;
+                if (Get(player, "WantedLevel") is int wanted) sample.Wanted = wanted;
+                sample.Searching = Flag(player, "IsInSearchMode");
                 object manager = Get(Get(Get(mod, "ModDataFileManager"), "Settings"), "SettingsManager");
                 object needsSettings = Get(manager, "NeedsSettings");
                 object needs = Get(player, "HumanState");
@@ -147,8 +157,8 @@ namespace ElectroHud
                 try
                 {
                     mutex = Mutex.OpenExisting(channel + ".Lock");
-                    map = MemoryMappedFile.OpenExisting(channel, MemoryMappedFileRights.Read);
-                    view = map.CreateViewAccessor(0, Size, MemoryMappedFileAccess.Read);
+                    map = MemoryMappedFile.OpenExisting(channel, MemoryMappedFileRights.ReadWrite);
+                    view = map.CreateViewAccessor(0, Size, MemoryMappedFileAccess.ReadWrite);
                 }
                 catch (FileNotFoundException) { Dispose(); }
                 catch (WaitHandleCannotBeOpenedException) { Dispose(); }
@@ -171,10 +181,18 @@ namespace ElectroHud
 
             int flags = snapshot.Flags;
             uint tracked = snapshot.Handle;
-            Report("Ponte", "snapshot v1 recebido");
+            Report("Ponte", "snapshot v2 recebido");
             Report("Detecção LS RED", "detectado pelo publicador IPC");
             Report("Instância LS RED", "Player ativo confirmado pelo publicador");
             sample.Menu |= (flags & 1) != 0;
+            sample.Searching = (flags & 64) != 0;
+            sample.Wanted = snapshot.Wanted;
+            sample.Region = snapshot.Region;
+            sample.Street = snapshot.Street;
+            sample.Agency = snapshot.Agency;
+            sample.Gang = snapshot.Gang;
+            if (sample.RoadVehicle && handle != 0 && handle == tracked && snapshot.Limit > 0 && !float.IsInfinity(snapshot.Limit))
+                sample.SpeedLimit = snapshot.Limit;
             sample.Hunger = BridgeNeed("Fome", settings.Hunger, snapshot.Hunger, flags, 8, "Hunger");
             sample.Thirst = BridgeNeed("Sede", settings.Thirst, snapshot.Thirst, flags, 16, "Thirst");
             sample.Sleep = BridgeNeed("Sono", settings.Sleep, snapshot.Sleep, flags, 32, "Sleep");
@@ -205,21 +223,63 @@ namespace ElectroHud
                 }
                 if (!held)
                     return;
-                cached = view.ReadInt32(0) == Magic ? new BridgeSnapshot
+                long stamp = view.ReadInt64(8);
+                if (cached.Timestamp == stamp) return;
+                cached = view.ReadInt32(0) == Magic && stamp > 0 ? new BridgeSnapshot
                 {
-                    Timestamp = view.ReadInt64(8),
+                    Timestamp = stamp,
                     Handle = view.ReadUInt32(4),
                     Hunger = view.ReadSingle(16),
                     Thirst = view.ReadSingle(20),
                     Sleep = view.ReadSingle(24),
                     Fuel = view.ReadSingle(28),
-                    Flags = view.ReadInt32(32)
+                    Flags = view.ReadInt32(32),
+                    Wanted = view.ReadInt32(36),
+                    Limit = view.ReadSingle(40),
+                    Region = ReadText(64),
+                    Street = ReadText(256),
+                    Agency = ReadText(448),
+                    Gang = ReadText(640)
                 } : default(BridgeSnapshot);
             }
             finally
             {
                 if (held)
                     mutex.ReleaseMutex();
+            }
+        }
+
+        private readonly byte[] textBuffer = new byte[192];
+
+        private string ReadText(long offset)
+        {
+            view.ReadArray(offset, textBuffer, 0, textBuffer.Length);
+            int length = Array.IndexOf(textBuffer, (byte)0);
+            return System.Text.Encoding.UTF8.GetString(textBuffer, 0, length < 0 ? textBuffer.Length : length);
+        }
+
+        public void PublishVisibility(int mask, uint vehicleHandle)
+        {
+            if (view == null)
+                return;
+            bool held = false;
+            try
+            {
+                try { held = mutex.WaitOne(0); }
+                catch (AbandonedMutexException) { held = true; mask = 0; }
+                if (!held)
+                    return;
+                view.Write(832, mask);
+                view.Write(836, vehicleHandle);
+                view.Write(48, mask == 0 ? 0L : Stopwatch.GetTimestamp());
+            }
+            catch (Exception e) when (e is IOException || e is UnauthorizedAccessException || e is ObjectDisposedException)
+            {
+                Report("Ponte", "falha no sinal de visibilidade: " + e.Message);
+            }
+            finally
+            {
+                if (held) mutex.ReleaseMutex();
             }
         }
 
@@ -256,6 +316,7 @@ namespace ElectroHud
 
         public void Dispose()
         {
+            PublishVisibility(0, 0);
             view?.Dispose();
             map?.Dispose();
             mutex?.Dispose();

@@ -23,8 +23,16 @@ namespace ElectroHud
         private readonly Settings settings;
         private readonly Color cyan, magenta, background, edge;
         private readonly string cache;
-        private static readonly int[] Order = { 0, 6, 1, 2, 3, 4, 5 };
+        private static readonly int[] Order = { 0, 6, 1, 2, 3 };
         private long previousFrame;
+        private const float TerritoryWidth = 405;
+        private const float RowHeight = 27;
+        private readonly string[] territoryText = new string[5];
+        private readonly Texture[] territory = new Texture[5];
+        private readonly Texture[] vehicleDigits = new Texture[10];
+        private Texture speedUnit, limitLabel;
+        private int textureSerial;
+
 
         private sealed class Gauge
         {
@@ -50,6 +58,10 @@ namespace ElectroHud
             Directory.CreateDirectory(cache);
             try
             {
+                for (int i = 0; i < vehicleDigits.Length; i++)
+                    vehicleDigits[i] = Text("speed-" + i, i.ToString(), WithOpacity(Color.White, 1), 58, 43, 69, true);
+                speedUnit = Text("speed-unit", "km/h", WithOpacity(Color.White, .9f), 24, 120, 36);
+                limitLabel = Text("limit-label", "Limite", WithOpacity(Color.White, .9f), 23, 132, 36);
                 var options = settings.Indicators;
                 for (int i = 0; i < options.Length; ++i)
                 {
@@ -90,71 +102,176 @@ namespace ElectroHud
             }
         }
 
-        public void Draw(GraphicsEventArgs frame, Sample sample)
+        public void PrepareTerritory(Sample sample)
         {
-            int count = 0;
-            foreach (int slot in Order)
-            {
-                var gauge = gauges[slot];
-                if (gauge == null)
-                    continue;
-                if (float.IsNaN(sample.Value(gauge.Kind)))
-                    gauge.Display = float.NaN;
-                else
-                    ++count;
-            }
-            if (count == 0 || sample.Screen.Width <= 0 || sample.Screen.Height <= 0 || settings.Opacity <= 0)
-            {
-                previousFrame = 0;
+            if (!settings.ShowTerritory)
                 return;
+            SetRow(0, sample.Region, Color.White);
+            SetRow(1, sample.Street, Color.Gainsboro);
+            SetRow(2, sample.Wanted <= 0 ? "Sem nível de procurado" :
+                "Procurado: nível " + sample.Wanted + (sample.Searching ? " · Em busca" : ""), Color.White);
+            SetRow(3, sample.Agency, Color.DeepSkyBlue);
+            SetRow(4, sample.Gang, Color.Orchid);
+        }
+
+        private void SetRow(int index, string value, Color color)
+        {
+            if (territoryText[index] == value)
+                return;
+            string name = "territory-" + textureSerial++;
+            Texture next = string.IsNullOrWhiteSpace(value) ? null :
+                Text(name, value, WithOpacity(color, 1), 32, 746, 52, index == 0, true);
+            if (next != null)
+                DeleteCachedText(name);
+            var previous = territory[index];
+            if (previous != null)
+            {
+                textures.Remove(previous);
+                if ((object)previous is IDisposable disposable)
+                    disposable.Dispose();
             }
+            territoryText[index] = value;
+            territory[index] = next;
+        }
+
+        private void DeleteCachedText(string name)
+        {
+            try { File.Delete(Path.Combine(cache, name + ".png")); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
+
+        public int Draw(GraphicsEventArgs frame, Sample sample)
+        {
+            float width = sample.Screen.Width, height = sample.Screen.Height;
+            if (width <= 0 || height <= 0 || settings.Opacity <= 0)
+                return 0;
 
             long now = Stopwatch.GetTimestamp();
             float elapsed = previousFrame == 0 ? .05f : Math.Min(.12f, (now - previousFrame) / (float)Stopwatch.Frequency);
             previousFrame = now;
             float progress = settings.Animate ? 1 - (float)Math.Exp(-12 * elapsed) : 1f;
-            float width = Math.Max(228, count * CardWidth + 22);
-            float scale = Math.Min(sample.Screen.Width / 1920f, sample.Screen.Height / 1080f) * settings.Scale;
-            float insetX = sample.Screen.Width * (1 - sample.SafeZone) * .5f;
-            float insetY = sample.Screen.Height * (1 - sample.SafeZone) * .5f;
-            float margin = Math.Min(12 * scale, Math.Min(sample.Screen.Width, sample.Screen.Height) * .025f);
-            insetX += margin;
-            insetY += margin;
-            scale = Math.Min(scale, Math.Min((sample.Screen.Width - 2 * insetX) / width,
-                (sample.Screen.Height - 2 * insetY) / PanelHeight));
-            float left = Clamp(sample.Screen.Width * settings.X - width * scale / 2,
-                insetX, sample.Screen.Width - insetX - width * scale);
-            float top = Clamp(sample.Screen.Height * settings.Y - PanelHeight * scale / 2,
-                insetY, sample.Screen.Height - insetY - PanelHeight * scale);
-
-            DrawPanel(frame, left, top, width, scale);
-            int index = 0;
+            int count = 0, rows = 0;
             foreach (int slot in Order)
+                if (Available(sample, slot))
+                    count++;
+            foreach (var row in territory)
+                if (row != null)
+                    rows++;
+
+            bool vehicle = settings.ShowVehicle && sample.InVehicle && !float.IsNaN(sample.Speed);
+            bool fuel = vehicle && Available(sample, (int)Indicator.Fuel);
+            bool limit = vehicle && sample.SpeedLimit > 0 && sample.SpeedLimit <= 999;
+            float needsWidth = count * CardWidth + 22;
+            float vehicleWidth = 156 + (fuel ? 108 : 0) + (limit ? 90 : 0);
+            float territoryHeight = rows == 0 ? 0 : 16 + rows * RowHeight;
+            float right = width * (1 - (1 - sample.SafeZone) / 2 - settings.RightMargin);
+            float top = height * ((1 - sample.SafeZone) / 2 + settings.TopOffset);
+            float bottom = height * (1 - (1 - sample.SafeZone) / 2 - settings.BottomMargin);
+            float stackHeight = (count > 0 ? PanelHeight + 9 : 0) + territoryHeight + (vehicle ? PanelHeight + 12 : 0);
+            float scale = Math.Min(width / 1920f, height / 1080f) * settings.Scale;
+            scale = Math.Min(scale, Math.Min((bottom - top) / Math.Max(1, stackHeight),
+                width * .48f / Math.Max(needsWidth, Math.Max(TerritoryWidth, vehicleWidth))));
+            if (scale <= 0)
+                return 0;
+
+            int mask = 0;
+            if (count > 0)
             {
-                var gauge = gauges[slot];
-                if (gauge == null)
-                    continue;
-                float value = sample.Value(gauge.Kind);
-                if (float.IsNaN(value))
-                    continue;
-                gauge.Display = float.IsNaN(gauge.Display) ? value : gauge.Display + (value - gauge.Display) * progress;
-                float center = (width - count * CardWidth) / 2 + (index++ + .5f) * CardWidth;
-                DrawGauge(frame, gauge, value, left + center * scale, top, scale, now);
+                float left = right - needsWidth * scale;
+                DrawPanel(frame, left, top, needsWidth, scale);
+                int index = 0;
+                foreach (int slot in Order)
+                {
+                    if (!Available(sample, slot))
+                        continue;
+                    DrawValue(frame, gauges[slot], sample, left + (11 + (index++ + .5f) * CardWidth) * scale, top, scale, now, progress);
+                    if (slot >= 1 && slot <= 3)
+                        mask |= 1 << (slot + 2);
+                }
+                top += (PanelHeight + 9) * scale;
             }
+            if (rows > 0)
+            {
+                float left = right - TerritoryWidth * scale;
+                DrawPanel(frame, left, top, TerritoryWidth, scale, territoryHeight);
+                int index = 0;
+                foreach (var row in territory)
+                    if (row != null)
+                        Sprite(frame, row, left, top, scale, 16, 8 + index++ * RowHeight, 373, 26);
+            }
+            if (vehicle)
+            {
+                float left = right - vehicleWidth * scale;
+                float y = bottom - PanelHeight * scale;
+                DrawPanel(frame, left, y, vehicleWidth, scale);
+                if (fuel)
+                {
+                    DrawValue(frame, gauges[(int)Indicator.Fuel], sample, left + 54 * scale, y, scale, now, progress);
+                    mask |= 4;
+                }
+                float speedX = left + (fuel ? 108 : 0) * scale;
+                for (int i = 0; i < Segments; ++i)
+                {
+                    if (i > 14 && i < 26)
+                        continue;
+                    PointF point = ring[i];
+                    Rect(frame, speedX, y, scale, 77 + point.X * 1.85f, 56 + point.Y * 1.85f,
+                        2.5f, 2.5f, i < 14 ? magenta : cyan);
+                }
+                DrawNumber(frame, sample.Speed, speedX, y, scale, 78, 21, 1);
+                Sprite(frame, speedUnit, speedX, y, scale, 48, 71, 60, 18);
+                Rect(frame, speedX, y, scale, 36, 96, 42, 2, cyan);
+                Rect(frame, speedX, y, scale, 78, 96, 42, 2, magenta);
+                if (limit)
+                {
+                    float limitX = speedX + 156 * scale;
+                    Sprite(frame, limitLabel, limitX, y, scale, 7, 26, 66, 18);
+                    DrawNumber(frame, sample.SpeedLimit, limitX, y, scale, 40, 44, .72f);
+                }
+            }
+            return mask;
         }
 
-        private void DrawPanel(GraphicsEventArgs f, float x, float y, float width, float scale)
+        private bool Available(Sample sample, int slot)
         {
-            Rect(f, x, y, scale, 5, 0, width - 10, PanelHeight, background);
-            Rect(f, x, y, scale, 0, 5, 5, PanelHeight - 10, background);
-            Rect(f, x, y, scale, width - 5, 5, 5, PanelHeight - 10, background);
+            var gauge = gauges[slot];
+            if (gauge == null)
+                return false;
+            if (!float.IsNaN(sample.Value(gauge.Kind)))
+                return true;
+            gauge.Display = float.NaN;
+            return false;
+        }
+
+        private void DrawValue(GraphicsEventArgs f, Gauge gauge, Sample sample, float x, float y, float scale, long now, float progress)
+        {
+            float value = sample.Value(gauge.Kind);
+            gauge.Display = float.IsNaN(gauge.Display) ? value : gauge.Display + (value - gauge.Display) * progress;
+            DrawGauge(f, gauge, value, x, y, scale, now);
+        }
+
+        private void DrawNumber(GraphicsEventArgs f, float value, float x, float y, float scale, float center, float top, float size)
+        {
+            int number = (int)Math.Round(Math.Max(0, Math.Min(999, value)));
+            int divisor = number >= 100 ? 100 : number >= 10 ? 10 : 1;
+            float position = center - (divisor == 100 ? 3 : divisor == 10 ? 2 : 1) * 15 * size / 2;
+            for (; divisor > 0; divisor /= 10, position += 15 * size)
+                Sprite(f, vehicleDigits[number / divisor % 10], x, y, scale, position, top, 21.5f * size, 49 * size);
+        }
+
+        private void DrawPanel(GraphicsEventArgs f, float x, float y, float width, float scale, float height = PanelHeight)
+        {
+            Rect(f, x, y, scale, 5, 0, width - 10, height, background);
+            Rect(f, x, y, scale, 0, 5, 5, height - 10, background);
+            Rect(f, x, y, scale, width - 5, 5, 5, height - 10, background);
             Rect(f, x, y, scale, 11, 5, width - 22, 1, edge);
             Rect(f, x, y, scale, 5, 0, 54, 2, cyan);
             Rect(f, x, y, scale, 0, 5, 2, 19, cyan);
             Rect(f, x, y, scale, width - 38, 0, 33, 2, magenta);
             Rect(f, x, y, scale, width - 2, 5, 2, 13, magenta);
-            Rect(f, x, y, scale, 5, PanelHeight - 2, 31, 2, magenta);
-            Rect(f, x, y, scale, width - 58, PanelHeight - 2, 53, 2, cyan);
+            Rect(f, x, y, scale, 5, height - 2, 31, 2, magenta);
+            Rect(f, x, y, scale, width - 58, height - 2, 53, 2, cyan);
             for (int i = 0; i < 3; ++i)
                 Rect(f, x, y, scale, width - 20 - i * 6, 13, 3, 3, i == 2 ? magenta : cyan);
         }
@@ -230,14 +347,14 @@ namespace ElectroHud
             return Load(output);
         }
 
-        private Texture Text(string name, string text, Color color, float fontSize, int width, int height, bool bold = false)
+        private Texture Text(string name, string text, Color color, float fontSize, int width, int height, bool bold = false, bool left = false)
         {
             string path = Path.Combine(cache, name + ".png");
             using (var image = new Bitmap(width, height, PixelFormat.Format32bppArgb))
             using (var graphics = System.Drawing.Graphics.FromImage(image))
             using (var font = new Font("Consolas", fontSize, bold ? FontStyle.Bold : FontStyle.Regular, GraphicsUnit.Pixel))
             using (var brush = new SolidBrush(color))
-            using (var format = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+            using (var format = new StringFormat { Alignment = left ? StringAlignment.Near : StringAlignment.Center, LineAlignment = StringAlignment.Center, FormatFlags = StringFormatFlags.NoWrap, Trimming = StringTrimming.EllipsisCharacter })
             {
                 graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
                 graphics.DrawString(text, font, brush, new RectangleF(0, 0, width, height), format);

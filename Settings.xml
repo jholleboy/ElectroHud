@@ -1,9 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <ElectroHud>
   <Enabled>true</Enabled>
-  <X>0.50</X>
-  <Y>0.88</Y>
-  <Scale>1.25</Scale>
+  <RightMargin>0.018</RightMargin>
+  <TopOffset>0.125</TopOffset>
+  <BottomMargin>0.045</BottomMargin>
+  <Scale>0.75</Scale>
+  <ShowTerritory>true</ShowTerritory>
+  <ShowVehicle>true</ShowVehicle>
+  <SuppressReplacedLsrIndicators>true</SuppressReplacedLsrIndicators>
   <Opacity>0.86</Opacity>
   <Diagnostics>false</Diagnostics>
   <Animate>true</Animate>

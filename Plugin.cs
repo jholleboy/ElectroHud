@@ -13,6 +13,8 @@ namespace ElectroHud
         private static readonly object Sync = new object();
         private static HudRenderer renderer;
         private static Sample latest;
+        private static long lastDraw;
+        private static int drawnMask;
         private static volatile bool stopping;
 
         public static void Main()
@@ -40,7 +42,7 @@ namespace ElectroHud
                         {
                             Screen = Game.Resolution,
                             SafeZone = Settings.InRange(NativeFunction.Natives.GET_SAFE_ZONE_SIZE<float>(), .8f, 1f, 1f),
-                            Visible = visible,
+                            Visible = visible, SpeedLimit = float.NaN,
                             Health = float.NaN, Armor = float.NaN, Hunger = float.NaN, Thirst = float.NaN,
                             Sleep = float.NaN, Fuel = float.NaN
                         };
@@ -66,14 +68,39 @@ namespace ElectroHud
                                 if (armorCapacity > 0)
                                     sample.Armor = Settings.InRange(ped.Armor * 100f / armorCapacity, 0, 100, float.NaN);
                                 lsr.ReportNative(sample.Health, sample.Armor);
-                                lsr.Read(ref sample, ped.IsInAnyVehicle(false) ? ped.CurrentVehicle : null);
+                                var vehicle = ped.IsInAnyVehicle(false) ? ped.CurrentVehicle : null;
+                                sample.InVehicle = vehicle != null && vehicle.Exists();
+                                if (sample.InVehicle)
+                                {
+                                    sample.VehicleHandle = (uint)vehicle.Handle;
+                                    sample.Speed = vehicle.Speed * 3.6f;
+                                    int kind = NativeFunction.Natives.GET_VEHICLE_CLASS<int>(sample.VehicleHandle);
+                                    sample.RoadVehicle = kind >= 0 && kind <= 12 || kind >= 17 && kind <= 20;
+                                }
+                                sample.Wanted = NativeFunction.Natives.GET_PLAYER_WANTED_LEVEL<int>(
+                                    NativeFunction.Natives.PLAYER_ID<int>());
+                                lsr.Read(ref sample, vehicle);
                                 sample.Visible = !settings.HideInMenus || !sample.Menu;
                             }
                             else
                                 sample.Visible = false;
                         }
+                        int mask;
                         lock (Sync)
+                        {
+                            if (sample.Visible && settings.ShowTerritory)
+                                renderer.PrepareTerritory(sample);
+                            var age = System.Diagnostics.Stopwatch.GetTimestamp() - lastDraw;
+                            mask = sample.Visible && settings.SuppressReplacedLsrIndicators
+                                && age < System.Diagnostics.Stopwatch.Frequency / 2 ? drawnMask : 0;
+                            if (float.IsNaN(sample.Hunger)) mask &= ~8;
+                            if (float.IsNaN(sample.Thirst)) mask &= ~16;
+                            if (float.IsNaN(sample.Sleep)) mask &= ~32;
+                            if (float.IsNaN(sample.Fuel) || latest.VehicleHandle != sample.VehicleHandle) mask &= ~4;
+                            drawnMask = 0;
                             latest = sample;
+                        }
+                        lsr.PublishVisibility(mask, sample.VehicleHandle);
                         GameFiber.Sleep(50);
                     }
                 }
@@ -111,7 +138,10 @@ namespace ElectroHud
                 lock (Sync)
                 {
                     if (!stopping && latest.Visible)
-                        renderer?.Draw(e, latest);
+                    {
+                        drawnMask = renderer?.Draw(e, latest) ?? 0;
+                        lastDraw = System.Diagnostics.Stopwatch.GetTimestamp();
+                    }
                 }
             }
             catch (Exception error)

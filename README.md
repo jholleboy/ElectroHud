@@ -1,8 +1,8 @@
 # ElectroHud
 
-HUD independente para **GTA V Legacy**, RAGE Plugin Hook e .NET Framework 4.8. O painel inferior central mostra saúde e colete e, quando os dados do Los Santos RED estão disponíveis, fome, sede, sono e combustível. As barras circulares respondem aos valores reais. O painel recolhe os espaços dos indicadores indisponíveis.
+HUD independente para **GTA V Legacy**, RAGE Plugin Hook e .NET Framework 4.8. A V3 posiciona necessidades e território no canto superior direito, abaixo da área reservada para dinheiro e estrelas. O painel inferior direito mostra a velocidade em km/h ou, com dados disponíveis do Los Santos RED, também combustível e limite cadastrado para a rua.
 
-A interface usa moldura ciano e magenta, fundo escuro translúcido, ícones originais com fundo transparente e percentuais coloridos. O painel permanece em uma linha, inclusive quando só Saúde e Colete estão disponíveis, e não tem cabeçalho.
+A interface usa moldura ciano e magenta, fundo escuro translúcido, ícones com fundo transparente e percentuais coloridos. Saúde, Colete, Fome, Sede e Sono ficam em uma única linha. A escala padrão é 40% menor que a da V2.
 
 ## Compilar e instalar
 
@@ -19,6 +19,6 @@ Use **F9** para alternar a visibilidade. Ative `<Diagnostics>true</Diagnostics>`
 
 ## Configuração
 
-Edite `Plugins\ElectroHud\Settings.xml` e recarregue o plugin. `X` e `Y` são as coordenadas normalizadas do centro do painel. `Scale` ajusta o tamanho com a resolução, e `Opacity` vai de 0 a 1. `Cyan`, `Magenta` e as cores individuais aceitam `#RRGGBB`. Cada indicador aceita `Enabled` e `CriticalPercent`. `Animate` controla interpolação e pulsação, `HideInMenus` e `HideInScenes` controlam a ocultação, e `ToggleKey` aceita nomes de teclas de `System.Windows.Forms.Keys`, como `F9` ou `F11`.
+Edite `Plugins\ElectroHud\Settings.xml` e recarregue o plugin. `RightMargin`, `TopOffset` e `BottomMargin` controlam os recuos adicionais da área segura, em frações da dimensão correspondente da tela. Substitua o XML da V2 para adotar a nova posição e a escala padrão `0.75`. `ShowTerritory` e `ShowVehicle` habilitam os painéis. `SuppressReplacedLsrIndicators` controla a supressão seletiva com a ponte V3. `Opacity` vai de 0 a 1. `Cyan`, `Magenta` e as cores individuais aceitam `#RRGGBB`. Cada indicador aceita `Enabled` e `CriticalPercent`. `Animate` controla interpolação e pulsação, `HideInMenus` e `HideInScenes` controlam a ocultação, e `ToggleKey` aceita nomes de teclas de `System.Windows.Forms.Keys`, como `F9` ou `F11`.
 
-O indicador de estresse fica oculto por falta de uma fonte verificada. Sem o Los Santos RED, o plugin apresenta a saúde e o colete do GTA V. Consulte [a integração](INTEGRATION.md) e [o roteiro de teste](TESTING.md).
+O indicador de estresse fica oculto por falta de uma fonte verificada. Sem o Los Santos RED, o plugin apresenta a saúde, o colete, o nível de procurado nativo e a velocidade do veículo. Consulte [a integração](INTEGRATION.md) e [o roteiro de teste](TESTING.md).

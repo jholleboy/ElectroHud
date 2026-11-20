@@ -33,9 +33,13 @@ namespace ElectroHud
     public sealed class Settings
     {
         public bool Enabled { get; set; } = true;
-        public float X { get; set; } = .5f;
-        public float Y { get; set; } = .88f;
-        public float Scale { get; set; } = 1.25f;
+        public float RightMargin { get; set; } = .018f;
+        public float TopOffset { get; set; } = .125f;
+        public float BottomMargin { get; set; } = .045f;
+        public float Scale { get; set; } = .75f;
+        public bool ShowTerritory { get; set; } = true;
+        public bool ShowVehicle { get; set; } = true;
+        public bool SuppressReplacedLsrIndicators { get; set; } = true;
         public float Opacity { get; set; } = .86f;
         public bool Diagnostics { get; set; }
         public bool Animate { get; set; } = true;
@@ -64,9 +68,10 @@ namespace ElectroHud
                 using (var stream = File.OpenRead(path))
                 {
                     var result = (Settings)new XmlSerializer(typeof(Settings)).Deserialize(stream);
-                    result.X = InRange(result.X, 0, 1, .5f);
-                    result.Y = InRange(result.Y, 0, 1, .88f);
-                    result.Scale = InRange(result.Scale, .35f, 2, 1);
+                    result.RightMargin = InRange(result.RightMargin, 0, .3f, .018f);
+                    result.TopOffset = InRange(result.TopOffset, .125f, .42f, .125f);
+                    result.BottomMargin = InRange(result.BottomMargin, 0, .23f, .045f);
+                    result.Scale = InRange(result.Scale, .35f, 2, .75f);
                     result.Opacity = InRange(result.Opacity, 0, 1, .86f);
                     return result;
                 }
@@ -87,7 +92,11 @@ namespace ElectroHud
     internal struct Sample
     {
         public bool Visible;
-        public bool Menu;
+        public bool Menu, InVehicle, Searching, RoadVehicle;
+        public uint VehicleHandle;
+        public int Wanted;
+        public float Speed, SpeedLimit;
+        public string Region, Street, Agency, Gang;
         public float SafeZone;
         public Size Screen;
         public float Health, Hunger, Thirst, Sleep, Fuel, Armor;
